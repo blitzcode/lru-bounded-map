@@ -63,6 +63,7 @@ main = do
     let allDeleted = foldl' (\r k -> fst $ LBM_CHAMT.delete k r) (mkLBM_CHAMT5k kvL) keysL
      in when ((fst $ LBM_CHAMT.size allDeleted) /= 0 || isJust (LBM_CHAMT.valid allDeleted)) $
             (putStrLn "mkLBM_CHAMT5k delete failed") >> exitFailure
+    {-
     let lookups    = (map (fst) . take 100 . drop 4000 $ kvL) ++
                      (map (fst) . take 100             $ kvL)
         insertions = [(B8.pack $ show i, i) | i <- [1..50]]
@@ -82,6 +83,7 @@ main = do
                               insertions
      in when (test /= reference) $
             (putStrLn "mkLBM_CHAMT1k lookup / insert / delete comparison failed") >> exitFailure
+    -}
     -- Make sure we build the initial maps
     ({-mkDMS           kvL-}) `seq`
       (mkDHMS        kvL) `seq`

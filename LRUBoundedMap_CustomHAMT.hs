@@ -1,4 +1,6 @@
 
+{-# LANGUAGE BangPatterns #-}
+
 module LRUBoundedMap_CustomHAMT ( Map
                                 , empty
                                 , toList
@@ -16,33 +18,104 @@ module LRUBoundedMap_CustomHAMT ( Map
                                 ) where
 
 import Prelude hiding (lookup, null)
-import Data.Hashable
+import qualified Data.Hashable as H
+import Data.Hashable (Hashable)
 import Data.Bits
 import Data.Word
+import Data.List (find)
 import qualified Data.Vector as V
+import qualified Data.Vector.Mutable as VM
+import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Writer
 
--- Associative array implemented on top of a Hashed Array Mapped Trie.
--- Basically a prefix tree over the bits of key hashes, with a higher than
--- binary branching factor. Additional least / most recently used bounds for
--- subtrees are stored so the data structure can have an upper bound on the
--- number of elements and remove the least recently used on overflow. The other
--- bound allows to retrieve the item which was inserted / touched last
+-- Associative array implemented on top of a Hashed Array Mapped Trie (HAMT), based on the
+-- implementation in Data.HashMap. Basically a prefix tree over the bits of key hashes, with a
+-- higher than binary branching factor. Additional least / most recently used bounds for
+-- subtrees are stored so the data structure can have an upper bound on the number of elements
+-- and remove the least recently used one overflow. The other bound allows to retrieve the item
+-- which was inserted / touched last
 
 data Map k v = Map { mLimit :: !Int
-                   , mTick  :: !Word64
+                   , mTick  :: !Word64 -- We use a 'tick', which we keep incrementing, to keep
+                                       -- track of how old elements are relative to each other
                    , mHAMT  :: !(HAMT k v)
                    }
 
-data Leaf k v = L !k v
+type Hash = Word
 
+hash :: H.Hashable a => a -> Hash
+hash = fromIntegral . H.hash
+
+data Leaf k v = L !k !v
+
+-- Note that we don't have bitmap indexing for partially filled nodes. This simplifies and
+-- speeds up the code, but comes at the expensive of memory usage and access
 data HAMT k v = Empty
               | Leaf !Hash !(Leaf k v)
               | Node !(V.Vector (HAMT k v))
               | Collision !Hash ![Leaf k v]
 
-type Hash = Int
+bitsPerSubkey :: Int
+bitsPerSubkey = 4
+
+subkeyMask :: Hash
+subkeyMask = (1 `shiftL` bitsPerSubkey) - 1
+
+-- Retrieve a leaf child index from a hash and a subkey offset
+indexNode :: Hash -> Int -> Int
+indexNode h s = fromIntegral $ (h `shiftR` s) .&. subkeyMask
+
+maxChildren :: Int
+maxChildren = 1 `shiftL` bitsPerSubkey
+
+-- Insert a new element into the map, return the new map and the truncated
+-- element (if over the limit)
+insert :: (Eq k, Hashable k) => k -> v -> Map k v -> (Map k v, Maybe (k, v))
+insert k v m = insertInternal False k v m
+
+insertInternal :: (Eq k, Hashable k) => Bool -> k -> v -> Map k v -> (Map k v, Maybe (k, v))
+insertInternal updateOnly kIns vIns m =
+    let go h k v _ Empty = Leaf h (L k v)
+        go h k v s t@(Leaf lh li@(L lk lv)) =
+            if   h == lh
+            then if   k == lk
+                 then Leaf h (L k v) -- Update value
+                 else Collision h [L k v, li] -- We have a hash collision
+            else -- Expand leaf into interior node
+                 Node $ V.create $ do
+                     vec <- VM.replicate maxChildren Empty
+                     let ia = indexNode h  s
+                         ib = indexNode lh s
+                      in if   ia /= ib -- Subkey collision?
+                         then do VM.write vec ia $ Leaf h (L k v)
+                                 VM.write vec ib t
+                         else -- Collision, add one level
+                              VM.write vec ia $ go h k v (s + bitsPerSubkey) t
+                     return vec
+        go h k v s t@(Node ch) =
+            let idx      = indexNode h s
+                subtree  = ch V.! idx 
+                subtree' = -- Traverse into child with matching subkey
+                           go h k v (s + bitsPerSubkey) subtree
+            in  Node $ ch V.// [(idx, subtree')]
+        go h k v s t@(Collision colh ch) =
+            if   h == colh
+            then let traverse [] = [L k v] -- Append new leaf
+                     traverse (l@(L lk lv):xs) =
+                          if   lk == k
+                          then L k v : xs -- Update value
+                          else l : traverse xs
+                 in  Collision h $ traverse ch
+            else -- Expand collision into interior node
+                 go h k v s . Node $ V.create $ do
+                     vec <- VM.replicate maxChildren Empty
+                     VM.write vec (indexNode colh s) t
+                     return vec
+    in  ( m { mHAMT = go (hash kIns) kIns vIns 0 (mHAMT m)
+            }
+        , Nothing
+        )
 
 empty :: Int -> Map k v
 empty limit | limit >= 1 = Map { mLimit = limit
@@ -52,10 +125,14 @@ empty limit | limit >= 1 = Map { mLimit = limit
             | otherwise  = error "limit for LRUBoundedMap needs to be >= 1"
 
 size :: Map k v -> (Int, Int)
-size m = (undefined, mLimit m)
+size m = (go 0 $ mHAMT m, mLimit m)
+    where go n Empty = n
+          go n (Leaf _ _) = n + 1
+          go n (Node ch) = V.foldl' (go) n ch
+          go n (Collision _ ch) = n + length ch
 
 null :: Map k v -> Bool
-null m = undefined
+null m = case mHAMT m of Empty -> True; _ -> False
 
 member :: (Eq k, Hashable k) => k -> Map k v -> Bool
 member k = undefined
@@ -68,7 +145,16 @@ toList m = undefined
 
 -- Lookup element, also update LRU
 lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
-lookup k m = undefined
+lookup k' m = (m, go (hash k') k' 0 $ mHAMT m)
+    where go _ _ _ Empty = Nothing
+          go h k _ (Leaf lh (L lk lv))
+              | lh /= h   = Nothing
+              | lk /= k   = Nothing
+              | otherwise = Just lv
+          go h k s (Node ch) = go h k (s + bitsPerSubkey) (ch V.! indexNode h s)
+          go h k _ (Collision colh ch)
+              | colh == h = (\(L _ lv) -> lv) <$> find (\(L lk _) -> lk == k) ch
+              | otherwise = Nothing
 
 delete :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 delete k m = undefined
@@ -84,16 +170,11 @@ popOldest m = undefined
 update :: (Eq k, Hashable k) => k -> v -> Map k v -> Map k v
 update k v m = undefined
 
--- Insert a new element into the map, return the new map and the truncated
--- element (if over the limit)
-insert :: (Eq k, Hashable k) => k -> v -> Map k v -> (Map k v, Maybe (k, v))
-insert = undefined
-
 valid :: (Eq k, Hashable k) => Map k v -> Maybe String
 valid m =
     let w = execWriter $ do
                 when (mLimit m < 1) $ tell "limit < 1\n"
-                when ((fst $ size m) > mLimit m) $ tell "Size over the limit\n"
+                --when ((fst $ size m) > mLimit m) $ tell "Size over the limit\n"
     in  case w of [] -> Nothing
                   xs -> Just xs
 
