@@ -26,8 +26,6 @@ import qualified Data.Map.Strict as M
 -- Bounded map maintaining a separate map for access history to drop the least
 -- recently used element once the specified element limit is reached
 
--- TODO: Grand total of five O(log n) operations lookup (insert similar), maybe we can do better?
-
 data Map k v = Map !(DM.Map k Word64 v)
                    !Word64 -- We use a 'tick', which we keep incrementing, to keep track of how
                            -- old elements are relative to each other
