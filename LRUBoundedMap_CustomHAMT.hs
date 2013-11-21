@@ -50,8 +50,8 @@ hash = fromIntegral . H.hash
 
 data Leaf k v = L !k !v
 
--- Note that we don't have bitmap indexing for partially filled nodes. This simplifies and
--- speeds up the code, but comes at the expensive of memory usage and access
+-- Note that we don't have bitmap indexing for partially filled nodes. This simplifies the code,
+-- but comes at the expensive of memory usage and access
 data HAMT k v = Empty
               | Leaf !Hash !(Leaf k v)
               | Node !(V.Vector (HAMT k v))
@@ -173,22 +173,32 @@ delete k' m =
             | lk /= k   = t
             | otherwise = Empty
         go h k s t@(Node ch) =
-            let idx      = indexNode h s
-                subtree  = ch `V.unsafeIndex` idx 
-                subtree' = go h k (s + bitsPerSubkey) subtree
-                ch'      = ch V.// [(idx, subtree')]
-                used     = -- Indices of used slots in the child vector
-                           -- TODO: Would use fold', but there's a compiler bug:
-                           --       https://ghc.haskell.org/trac/ghc/ticket/8547
-                           V.foldr (\t' u -> u `seq` case t' of Empty -> u; _ -> t' : u) [] ch'
-            in  case used of
-                    []     -> Empty
-                    (x:[]) -> -- If the last remaining child is a leaf / collision we can
-                              -- replace the node with it. Otherwise, we still need the node
-                              -- as there is a subkey collision
-                              case x of Node _ -> Node ch'
-                                        _      -> x
-                    _      -> Node ch'
+            let !idx      = indexNode h s
+                !subtree  = ch `V.unsafeIndex` idx 
+                !subtree' = go h k (s + bitsPerSubkey) subtree
+                !ch'       = ch V.// [(idx, subtree')]
+                !used     = -- Non-empty slots in the child vector
+                            V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u) [] ch
+            in case used of
+                   (x:[]) -> case subtree' of
+                                 Empty     -> Empty    -- We removed the last element, delete node
+                                 Node _    -> Node ch' -- Only one child remaining, but there's a
+                                                       --   subkey collision, need to keep node
+                                 leafOrCol -> subtree' -- Last child is a leaf / collision, we can
+                                                       --   replace the current node with it
+                   (x:y:[]) -> case subtree' of
+                                   -- If we deleted our second last element, we
+                                   -- also need to check whether the last child
+                                   -- is a leaf / collision
+                                   Empty -> let !lst = ch `V.unsafeIndex` if   idx == x
+                                                                          then y
+                                                                          else x
+                                            in  case lst of
+                                                    Leaf _ _      -> lst
+                                                    Collision _ _ -> lst
+                                                    _             -> Node ch'
+                                   _ -> Node ch'
+                   _ -> Node ch'
         go h k _ t@(Collision colh ch)
             | colh == h = let (delch', ch') = partition (\(L lk _) -> lk == k) ch
                           in  if   length ch' == 1
