@@ -1,5 +1,6 @@
 
 {-# LANGUAGE BangPatterns #-}
+{-# OPTIONS_GHC -fno-full-laziness -funbox-strict-fields #-}
 
 module LRUBoundedMap_CustomHAMT ( Map
                                 , empty
@@ -22,7 +23,7 @@ import qualified Data.Hashable as H
 import Data.Hashable (Hashable)
 import Data.Bits
 import Data.Word
-import Data.List (find)
+import Data.List (find, partition)
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as VM
 import Control.Applicative hiding (empty)
@@ -71,9 +72,11 @@ maxChildren = 1 `shiftL` bitsPerSubkey
 
 -- Insert a new element into the map, return the new map and the truncated
 -- element (if over the limit)
+{-# INLINEABLE insert #-}
 insert :: (Eq k, Hashable k) => k -> v -> Map k v -> (Map k v, Maybe (k, v))
 insert k v m = insertInternal False k v m
 
+{-# INLINE insertInternal #-}
 insertInternal :: (Eq k, Hashable k) => Bool -> k -> v -> Map k v -> (Map k v, Maybe (k, v))
 insertInternal updateOnly kIns vIns m =
     let go h k v _ Empty = Leaf h (L k v)
@@ -112,7 +115,7 @@ insertInternal updateOnly kIns vIns m =
                      vec <- VM.replicate maxChildren Empty
                      VM.write vec (indexNode colh s) t
                      return vec
-    in  ( m { mHAMT = go (hash kIns) kIns vIns 0 (mHAMT m)
+    in  ( m { mHAMT = go (hash kIns) kIns vIns 0 $ mHAMT m
             }
         , Nothing
         )
@@ -124,6 +127,7 @@ empty limit | limit >= 1 = Map { mLimit = limit
                                }
             | otherwise  = error "limit for LRUBoundedMap needs to be >= 1"
 
+{-# INLINEABLE size #-}
 size :: Map k v -> (Int, Int)
 size m = (go 0 $ mHAMT m, mLimit m)
     where go n Empty = n
@@ -131,12 +135,15 @@ size m = (go 0 $ mHAMT m, mLimit m)
           go n (Node ch) = V.foldl' (go) n ch
           go n (Collision _ ch) = n + length ch
 
+{-# INLINEABLE null #-}
 null :: Map k v -> Bool
 null m = case mHAMT m of Empty -> True; _ -> False
 
+{-# INLINEABLE member #-}
 member :: (Eq k, Hashable k) => k -> Map k v -> Bool
 member k = undefined
 
+{-# INLINEABLE notMember #-}
 notMember :: (Eq k, Hashable k) => k -> Map k v -> Bool
 notMember k m = not $ member k m
 
@@ -144,20 +151,55 @@ toList :: Map k v -> [(k, v)]
 toList m = undefined
 
 -- Lookup element, also update LRU
+{-# INLINEABLE lookup #-}
 lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
-lookup k' m = (m, go (hash k') k' 0 $ mHAMT m)
-    where go _ _ _ Empty = Nothing
+lookup k' m = (go (hash k') k' 0 $ mHAMT m) `seq` (m, go (hash k') k' 0 $ mHAMT m)
+    where go !_ !_ !_ Empty = Nothing
           go h k _ (Leaf lh (L lk lv))
               | lh /= h   = Nothing
               | lk /= k   = Nothing
               | otherwise = Just lv
-          go h k s (Node ch) = go h k (s + bitsPerSubkey) (ch V.! indexNode h s)
+          go h k s (Node ch) = go h k (s + bitsPerSubkey) (ch `V.unsafeIndex` indexNode h s)
           go h k _ (Collision colh ch)
               | colh == h = (\(L _ lv) -> lv) <$> find (\(L lk _) -> lk == k) ch
               | otherwise = Nothing
 
+{-# INLINEABLE delete #-}
 delete :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
-delete k m = undefined
+delete k' m =
+    let go !_ !_ !_ Empty = Empty
+        go h k _ t@(Leaf lh (L lk _))
+            | lh /= h   = t 
+            | lk /= k   = t
+            | otherwise = Empty
+        go h k s t@(Node ch) =
+            let idx      = indexNode h s
+                subtree  = ch `V.unsafeIndex` idx 
+                subtree' = go h k (s + bitsPerSubkey) subtree
+                ch'      = ch V.// [(idx, subtree')]
+                used     = -- Indices of used slots in the child vector
+                           -- TODO: Would use fold', but there's a compiler bug:
+                           --       https://ghc.haskell.org/trac/ghc/ticket/8547
+                           V.foldr (\t' u -> u `seq` case t' of Empty -> u; _ -> t' : u) [] ch'
+            in  case used of
+                    []     -> Empty
+                    (x:[]) -> -- If the last remaining child is a leaf / collision we can
+                              -- replace the node with it. Otherwise, we still need the node
+                              -- as there is a subkey collision
+                              case x of Node _ -> Node ch'
+                                        _      -> x
+                    _      -> Node ch'
+        go h k _ t@(Collision colh ch)
+            | colh == h = let (delch', ch') = partition (\(L lk _) -> lk == k) ch
+                          in  if   length ch' == 1
+                              then  -- Deleted last remaining collision, it's a leaf node now
+                                   Leaf h $ head ch'
+                              else Collision h ch'
+            | otherwise = t
+    in  ( m { mHAMT = go (hash k') k' 0 $ mHAMT m
+            }
+        , Nothing
+        )
 
 -- Delete and return most recently used item
 popNewest :: (Eq k, Hashable k) => Map k v -> (Map k v, Maybe (k, v))
@@ -167,6 +209,7 @@ popNewest m = undefined
 popOldest :: (Eq k, Hashable k) => Map k v -> (Map k v, Maybe (k, v))
 popOldest m = undefined
 
+{-# INLINEABLE update #-}
 update :: (Eq k, Hashable k) => k -> v -> Map k v -> Map k v
 update k v m = undefined
 

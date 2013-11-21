@@ -23,7 +23,7 @@ import qualified LRUBoundedMap_CustomHAMT as LBM_CHAMT
 criterionCfg :: Config
 criterionCfg = defaultConfig { cfgPerformGC = ljust True
                              , cfgReport    = ljust "./report.html"
-                             , cfgSamples   = ljust 15
+                             , cfgSamples   = ljust 100
                              }
 
 main :: IO ()
@@ -55,12 +55,18 @@ main = do
                               putStrLn $ "mkLBM_CHAMT5k invalid value for key: " ++ B8.unpack k
                               exitFailure
           (_, Nothing) -> (putStrLn $ "mkLBM_CHAMT5k missing key: " ++ B8.unpack k) >> exitFailure
+    when (LBM_LLHM.size (mkLBM_LLHM5k kvL) /= LBM_CHAMT.size (mkLBM_CHAMT5k kvL)) $
+        (putStrLn "mkLBM_CHAMT5k size mismatch") >> exitFailure
     forM_ (LBM_LLHM.view $ mkLBM_LLHM1k kvL) $ \(k, v) ->
         case LBM_CHAMT.lookup k (mkLBM_CHAMT1k kvL) of
           (_, Just v') -> when (v /= v') $ do
                               putStrLn $ "mkLBM_CHAMT1k invalid value for key: " ++ B8.unpack k
                               exitFailure
           (_, Nothing) -> (putStrLn $ "mkLBM_CHAMT1k missing key: " ++ B8.unpack k) >> exitFailure
+    {-
+    when (LBM_LLHM.size (mkLBM_LLHM1k kvL) /= LBM_CHAMT.size (mkLBM_CHAMT1k kvL)) $
+        (putStrLn "mkLBM_CHAMT1k size mismatch") >> exitFailure
+    -}
     let allDeleted = foldl' (\r k -> fst $ LBM_CHAMT.delete k r) (mkLBM_CHAMT5k kvL) keysL
      in when ((fst $ LBM_CHAMT.size allDeleted) /= 0 || isJust (LBM_CHAMT.valid allDeleted)) $
             (putStrLn "mkLBM_CHAMT5k delete failed") >> exitFailure
@@ -75,15 +81,19 @@ main = do
                                        lookups
                               )
                               insertions
-        test       = sort . LBM_CHAMT.toList $
-                       foldl' (\r (k, v) -> fst $ LBM_CHAMT.insert k v r)
-                              ( foldl' (\r k -> fst $ LBM_CHAMT.lookup k r)
-                                       (mkLBM_CHAMT1k kvL)
-                                       lookups
-                              )
-                              insertions
-     in when (test /= reference) $
-            (putStrLn "mkLBM_CHAMT1k lookup / insert / delete comparison failed") >> exitFailure
+        testMap    = foldl' (\r (k, v) -> fst $ LBM_CHAMT.insert k v r)
+                            ( foldl' (\r k -> fst $ LBM_CHAMT.lookup k r)
+                                     (mkLBM_CHAMT1k kvL)
+                                     lookups
+                            )
+                            insertions
+        test       = sort LBM_CHAMT.toList $ testMap
+     in do case LBM_CHAMT.valid testMap of
+               Just err -> do putStrLn $ "lookup / insert / delete test valid: " ++ err
+                              exitFailure
+               Nothing  -> return ()
+           when (test /= reference) $
+              (putStrLn "mkLBM_CHAMT1k lookup / insert / delete comparison failed") >> exitFailure
     -}
     -- Make sure we build the initial maps
     ({-mkDMS           kvL-}) `seq`
