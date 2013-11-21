@@ -23,6 +23,7 @@ import qualified Data.Hashable as H
 import Data.Hashable (Hashable)
 import Data.Bits
 import Data.Word
+import Data.Maybe
 import Data.List (find, partition)
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as VM
@@ -223,11 +224,53 @@ popOldest m = undefined
 update :: (Eq k, Hashable k) => k -> v -> Map k v -> Map k v
 update k v m = undefined
 
-valid :: (Eq k, Hashable k) => Map k v -> Maybe String
+valid :: (Eq k, Hashable k, Eq v) => Map k v -> Maybe String
 valid m =
-    let w = execWriter $ do
-                when (mLimit m < 1) $ tell "limit < 1\n"
-                --when ((fst $ size m) > mLimit m) $ tell "Size over the limit\n"
+    let w =
+         execWriter $ do
+             when (mLimit m < 1) $ tell "limit < 1\n"
+             --when ((fst $ size m) > mLimit m) $ tell "Size over the limit\n"
+             let traverse s t =
+                   case t of
+                       Leaf h (L k v) -> do
+                           when (hash k /= h) $
+                               tell "Hash / key mismatch\n"
+                           case snd $ lookup k m of
+                               Nothing ->
+                                   tell "Can't lookup key found during traversal\n"
+                               Just v' -> when (v /= v') .
+                                   tell $ "Lookup of key found during traversal yields " ++
+                                          "different value\n"
+                       Collision h ch -> do
+                           when (length ch < 2) $
+                               tell "Hash collision node with <2 children\n"
+                           forM_ ch $ \(L lk lv) -> do
+                               when (hash lk /= h) $
+                                   tell "Leaf in a hash collision node with mismatched hash\n"
+                               case snd $ lookup lk m of
+                                   Nothing ->
+                                       tell "Can't lookup key found in collision\n"
+                                   Just v' -> when (lv /= v') .
+                                       tell $ "Lookup of key found in collision yields " ++
+                                              "different value\n"
+                       Node ch -> do
+                           let used = V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u)
+                                      []
+                                      ch
+                           when (s + bitsPerSubkey > bitSize (undefined :: Word)) $
+                               tell "Subkey shift too large during traversal\n"
+                           when (V.length ch /= maxChildren) $
+                               tell "Node with a child vector /= maxChildren\n"
+                           when (length used == 0) $
+                               tell "Node with only empty children\n"
+                           when (length used == 1) $
+                              case ch V.! head used of
+                                  Leaf      _ _ -> tell "Node with single Leaf child\n"
+                                  Collision _ _ -> tell "Node with single Collision child\n"
+                                  _         -> return ()
+                           forM_ (V.toList ch) $ traverse (s + bitsPerSubkey)
+                       Empty -> return ()
+              in traverse 0 $ mHAMT m
     in  case w of [] -> Nothing
                   xs -> Just xs
 
