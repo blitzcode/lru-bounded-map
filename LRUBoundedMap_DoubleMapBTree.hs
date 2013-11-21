@@ -18,6 +18,7 @@ import Prelude hiding (lookup)
 import Data.Word
 import Control.Applicative hiding (empty)
 import Control.Monad.Writer
+import Control.DeepSeq (NFData(rnf))
 import Text.Printf
 
 import qualified DoubleMap as DM
@@ -31,6 +32,9 @@ data Map k v = Map !(DM.Map k Word64 v)
                            -- old elements are relative to each other
                    !Int
                    deriving (Show)
+
+instance (NFData k, NFData v) => NFData (Map k v) where
+    rnf (Map m t l) = rnf m `seq` rnf t `seq` rnf l
 
 empty :: Int -> Map k v
 empty limit | limit >= 1 = Map DM.empty 0 limit

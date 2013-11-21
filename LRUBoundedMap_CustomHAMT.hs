@@ -23,13 +23,13 @@ import qualified Data.Hashable as H
 import Data.Hashable (Hashable)
 import Data.Bits
 import Data.Word
-import Data.Maybe
 import Data.List (find, partition)
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as VM
 import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Writer
+import Control.DeepSeq (NFData(rnf))
 
 -- Associative array implemented on top of a Hashed Array Mapped Trie (HAMT), based on the
 -- implementation in Data.HashMap. Basically a prefix tree over the bits of key hashes, with a
@@ -41,8 +41,12 @@ import Control.Monad.Writer
 data Map k v = Map { mLimit :: !Int
                    , mTick  :: !Word64 -- We use a 'tick', which we keep incrementing, to keep
                                        -- track of how old elements are relative to each other
+                   , mSize  :: !Int -- So size is O(1) instead of O(n)
                    , mHAMT  :: !(HAMT k v)
                    }
+
+instance (NFData k, NFData v) => NFData (Map k v) where
+    rnf (Map l t s h) = rnf l `seq` rnf t `seq` rnf s `seq` rnf h
 
 type Hash = Word
 
@@ -51,12 +55,21 @@ hash = fromIntegral . H.hash
 
 data Leaf k v = L !k !v
 
+instance (NFData k, NFData v) => NFData (Leaf k v) where
+    rnf (L k v) = rnf k `seq` rnf v
+
 -- Note that we don't have bitmap indexing for partially filled nodes. This simplifies the code,
 -- but comes at the expensive of memory usage and access
 data HAMT k v = Empty
-              | Leaf !Hash !(Leaf k v)
               | Node !(V.Vector (HAMT k v))
+              | Leaf !Hash !(Leaf k v)
               | Collision !Hash ![Leaf k v]
+
+instance (NFData k, NFData v) => NFData (HAMT k v) where
+    rnf Empty            = ()
+    rnf (Leaf _ l)       = rnf l
+    rnf (Node ch)        = rnf ch
+    rnf (Collision _ ch) = rnf ch
 
 bitsPerSubkey :: Int
 bitsPerSubkey = 4
@@ -64,12 +77,12 @@ bitsPerSubkey = 4
 subkeyMask :: Hash
 subkeyMask = (1 `shiftL` bitsPerSubkey) - 1
 
+maxChildren :: Int
+maxChildren = 1 `shiftL` bitsPerSubkey
+
 -- Retrieve a leaf child index from a hash and a subkey offset
 indexNode :: Hash -> Int -> Int
 indexNode h s = fromIntegral $ (h `shiftR` s) .&. subkeyMask
-
-maxChildren :: Int
-maxChildren = 1 `shiftL` bitsPerSubkey
 
 -- Insert a new element into the map, return the new map and the truncated
 -- element (if over the limit)
@@ -98,10 +111,10 @@ insertInternal updateOnly kIns vIns m =
                               VM.write vec ia $ go h k v (s + bitsPerSubkey) t
                      return vec
         go h k v s t@(Node ch) =
-            let idx      = indexNode h s
-                subtree  = ch V.! idx 
-                subtree' = -- Traverse into child with matching subkey
-                           go h k v (s + bitsPerSubkey) subtree
+            let !idx      = indexNode h s
+                !subtree  = ch `V.unsafeIndex` idx 
+                !subtree' = -- Traverse into child with matching subkey
+                            go h k v (s + bitsPerSubkey) subtree
             in  Node $ ch V.// [(idx, subtree')]
         go h k v s t@(Collision colh ch) =
             if   h == colh
@@ -124,13 +137,18 @@ insertInternal updateOnly kIns vIns m =
 empty :: Int -> Map k v
 empty limit | limit >= 1 = Map { mLimit = limit
                                , mTick  = 0
+                               , mSize  = 0
                                , mHAMT  = Empty
                                }
             | otherwise  = error "limit for LRUBoundedMap needs to be >= 1"
 
 {-# INLINEABLE size #-}
 size :: Map k v -> (Int, Int)
-size m = (go 0 $ mHAMT m, mLimit m)
+size m = ({-mSize m-} sizeTraverse m, mLimit m)
+
+-- O(n) size-by-traversal
+sizeTraverse :: Map k v -> Int
+sizeTraverse m = go 0 $ mHAMT m
     where go n Empty = n
           go n (Leaf _ _) = n + 1
           go n (Node ch) = V.foldl' (go) n ch
@@ -174,32 +192,31 @@ delete k' m =
             | lk /= k   = t
             | otherwise = Empty
         go h k s t@(Node ch) =
-            let !idx      = indexNode h s
-                !subtree  = ch `V.unsafeIndex` idx 
-                !subtree' = go h k (s + bitsPerSubkey) subtree
-                !ch'       = ch V.// [(idx, subtree')]
-                !used     = -- Non-empty slots in the child vector
-                            V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u) [] ch
-            in case used of
-                   (x:[]) -> case subtree' of
-                                 Empty     -> Empty    -- We removed the last element, delete node
-                                 Node _    -> Node ch' -- Only one child remaining, but there's a
-                                                       --   subkey collision, need to keep node
-                                 leafOrCol -> subtree' -- Last child is a leaf / collision, we can
-                                                       --   replace the current node with it
-                   (x:y:[]) -> case subtree' of
-                                   -- If we deleted our second last element, we
-                                   -- also need to check whether the last child
-                                   -- is a leaf / collision
-                                   Empty -> let !lst = ch `V.unsafeIndex` if   idx == x
-                                                                          then y
-                                                                          else x
-                                            in  case lst of
-                                                    Leaf _ _      -> lst
-                                                    Collision _ _ -> lst
-                                                    _             -> Node ch'
-                                   _ -> Node ch'
-                   _ -> Node ch'
+            let !idx     = indexNode h s
+                subtree  = ch `V.unsafeIndex` idx 
+                subtree' = go h k (s + bitsPerSubkey) subtree
+                ch'      = ch V.// [(idx, subtree')]
+                used     = -- Non-empty slots in the child vector
+                           V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u) [] ch
+            in  case subtree' of
+                    Empty     -> case used of
+                                     (x:[]) -> Empty -- We removed the last element, delete node
+                                     -- If we deleted our second last element, we
+                                     -- also need to check whether the last child
+                                     -- is a leaf / collision
+                                     (x:y:[]) -> let !lst = ch `V.unsafeIndex` if   idx == x
+                                                                               then y
+                                                                               else x
+                                                 in  case lst of
+                                                         Leaf _ _      -> lst
+                                                         Collision _ _ -> lst
+                                                         _             -> Node ch'
+                                     _ -> Node ch'
+                    Node _    -> Node ch'
+                    leafOrCol -> case used of
+                                     (x:[]) -> subtree' -- Last child is a leaf / collision, we
+                                                        -- can replace the current node with it
+                                     _      -> Node ch'
         go h k _ t@(Collision colh ch)
             | colh == h = let (delch', ch') = partition (\(L lk _) -> lk == k) ch
                           in  if   length ch' == 1
@@ -222,14 +239,20 @@ popOldest m = undefined
 
 {-# INLINEABLE update #-}
 update :: (Eq k, Hashable k) => k -> v -> Map k v -> Map k v
-update k v m = undefined
+update k v m =
+    case insertInternal True k v m of
+        (m', Nothing) -> m'
+        _             -> error "LRUBoundedMap.update: insertInternal truncated with updateOnly"
 
 valid :: (Eq k, Hashable k, Eq v) => Map k v -> Maybe String
 valid m =
     let w =
          execWriter $ do
              when (mLimit m < 1) $ tell "limit < 1\n"
-             --when ((fst $ size m) > mLimit m) $ tell "Size over the limit\n"
+             --when ((fst $ size m) /= sizeTraverse m) $
+             --    tell "Mismatch beween cached and actual size\n"
+             --when ((fst $ size m) > mLimit m)
+             --    $ tell "Size over the limit\n"
              let traverse s t =
                    case t of
                        Leaf h (L k v) -> do

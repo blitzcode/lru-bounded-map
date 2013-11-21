@@ -23,6 +23,7 @@ import qualified Data.Map.Strict as M
 import Prelude hiding (lookup, null)
 import Control.Applicative hiding (empty)
 import Control.Monad.Writer
+import Control.DeepSeq (NFData(rnf))
 import Text.Printf
 
 -- Map sorted and indexed by two different types of key (assumes both keys are
@@ -31,6 +32,9 @@ import Text.Printf
 data Map ka kb v = Map !(M.Map ka (kb, v))
                        !(M.Map kb (ka, v))
                        deriving (Show)
+
+instance (NFData ka, NFData kb, NFData v) => NFData (Map ka kb v) where
+    rnf (Map a b) = rnf a `seq` rnf b
 
 empty :: Map ka kb v
 empty = Map M.empty M.empty

@@ -17,6 +17,7 @@ module LRUBoundedMap_LinkedListHashMap ( Map
 import qualified Data.HashMap.Strict as HM
 import Prelude hiding (lookup, last, null)
 import Control.Monad.Writer
+import Control.DeepSeq (NFData(rnf))
 import Data.Hashable
 import Data.Maybe
 
@@ -37,10 +38,16 @@ data Map k v = Map { mFirst :: !(Maybe k)
                    , mMap   :: !(HM.HashMap k (Link k v))
                    }
 
+instance (NFData k, NFData v) => NFData (Map k v) where
+    rnf (Map f last lim m) = rnf f `seq` rnf last `seq` rnf lim `seq` rnf m
+
 data Link k v = Link { lPrev :: !(Maybe k)
                      , lNext :: !(Maybe k)
-                     , lVal  :: v
+                     , lVal  :: !v
                      }
+
+instance (NFData k, NFData v) => NFData (Link k v) where
+    rnf (Link p n v) = rnf p `seq` rnf n `seq` rnf v
 
 empty :: Int -> Map k v
 empty limit | limit >= 1 = Map { mFirst = Nothing
