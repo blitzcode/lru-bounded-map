@@ -36,7 +36,7 @@ main = do
         --mkDMS         = foldl' (\r (k, v) ->       M.insert k v r)         (M.empty)
         mkDHMS        = foldl' (\r (k, v) ->       HM.insert k v r)        (HM.empty)
         mkDIMS        = foldl' (\r (k, v) ->       IM.insert (hash k) v r) (IM.empty)
-        --mkLBM_LLHM5k  = foldl' (\r (k, v) -> fst $ LBM_LLHM.insert k v r)  (LBM_LLHM.empty  5000)
+        mkLBM_LLHM5k  = foldl' (\r (k, v) -> fst $ LBM_LLHM.insert k v r)  (LBM_LLHM.empty  5000)
         mkLBM_LLHM1k  = foldl' (\r (k, v) -> fst $ LBM_LLHM.insert k v r)  (LBM_LLHM.empty  1000)
         --mkLBM_DMBT5k  = foldl' (\r (k, v) -> fst $ LBM_DMBT.insert k v r)  (LBM_DMBT.empty  5000)
         --mkLBM_DMBT1k  = foldl' (\r (k, v) -> fst $ LBM_DMBT.insert k v r)  (LBM_DMBT.empty  1000)
@@ -49,11 +49,12 @@ main = do
     case LBM_CHAMT.valid $ mkLBM_CHAMT1k kvL of
         Just err -> (putStrLn $ "mkLBM_CHAMT1k.valid: " ++ err) >> exitFailure
         Nothing  -> return ()
-    forM_ kvL $ \(k, v) -> case LBM_CHAMT.lookup k (mkLBM_CHAMT5k kvL) of
-        (_, Just v') -> when (v /= v') $ do
-                            putStrLn $ "mkLBM_CHAMT5k invalid value for key: " ++ B8.unpack k
-                            exitFailure
-        (_, Nothing) -> (putStrLn $ "mkLBM_CHAMT5k missing key: " ++ B8.unpack k) >> exitFailure
+    forM_ (LBM_LLHM.view $ mkLBM_LLHM5k kvL) $ \(k, v) ->
+        case LBM_CHAMT.lookup k (mkLBM_CHAMT5k kvL) of
+          (_, Just v') -> when (v /= v') $ do
+                              putStrLn $ "mkLBM_CHAMT5k invalid value for key: " ++ B8.unpack k
+                              exitFailure
+          (_, Nothing) -> (putStrLn $ "mkLBM_CHAMT5k missing key: " ++ B8.unpack k) >> exitFailure
     forM_ (LBM_LLHM.view $ mkLBM_LLHM1k kvL) $ \(k, v) ->
         case LBM_CHAMT.lookup k (mkLBM_CHAMT1k kvL) of
           (_, Just v') -> when (v /= v') $ do
