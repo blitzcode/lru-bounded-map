@@ -22,8 +22,9 @@ import Prelude hiding (lookup, null)
 import qualified Data.Hashable as H
 import Data.Hashable (Hashable)
 import Data.Bits
+import Data.Maybe
 import Data.Word
-import Data.List (find, partition)
+import Data.List (find, partition, foldl')
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as VM
 import Control.Applicative hiding (empty)
@@ -167,7 +168,12 @@ notMember :: (Eq k, Hashable k) => k -> Map k v -> Bool
 notMember k m = not $ member k m
 
 toList :: Map k v -> [(k, v)]
-toList m = undefined
+toList m =  go [] $ mHAMT m
+    where go l Empty            = l
+          go l (Leaf _ (L k v)) = (k, v) : l
+          go l (Node ch)        = V.foldl' (\l' n -> go l' n) l ch
+          go l (Collision _ ch) = foldl' (\l' (L k v) -> (k, v) : l') l ch
+{-# INLINEABLE toList #-}
 
 -- Lookup element, also update LRU
 {-# INLINEABLE lookup #-}
@@ -248,34 +254,19 @@ valid :: (Eq k, Hashable k, Eq v) => Map k v -> Maybe String
 valid m =
     let w =
          execWriter $ do
-             when (mLimit m < 1) $ tell "limit < 1\n"
-             --when ((fst $ size m) /= sizeTraverse m) $
-             --    tell "Mismatch beween cached and actual size\n"
+             when (mLimit m < 1) $
+                 tell "Invalid limit (< 1)\n"
+             when ((fst $ size m) /= sizeTraverse m) $
+                 tell "Mismatch beween cached and actual size\n"
              --when ((fst $ size m) > mLimit m)
-             --    $ tell "Size over the limit\n"
+               --  $ tell "Size over the limit\n"
              let traverse s t =
                    case t of
-                       Leaf h (L k v) -> do
-                           when (hash k /= h) $
-                               tell "Hash / key mismatch\n"
-                           case snd $ lookup k m of
-                               Nothing ->
-                                   tell "Can't lookup key found during traversal\n"
-                               Just v' -> when (v /= v') .
-                                   tell $ "Lookup of key found during traversal yields " ++
-                                          "different value\n"
+                       Leaf h (L k v) -> checkKey h k v
                        Collision h ch -> do
                            when (length ch < 2) $
                                tell "Hash collision node with <2 children\n"
-                           forM_ ch $ \(L lk lv) -> do
-                               when (hash lk /= h) $
-                                   tell "Leaf in a hash collision node with mismatched hash\n"
-                               case snd $ lookup lk m of
-                                   Nothing ->
-                                       tell "Can't lookup key found in collision\n"
-                                   Just v' -> when (lv /= v') .
-                                       tell $ "Lookup of key found in collision yields " ++
-                                              "different value\n"
+                           forM_ ch $ \(L lk lv) -> checkKey h lk lv
                        Node ch -> do
                            let used = V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u)
                                       []
@@ -293,7 +284,27 @@ valid m =
                                   _         -> return ()
                            forM_ (V.toList ch) $ traverse (s + bitsPerSubkey)
                        Empty -> return ()
+                 checkKey h k v = do
+                     when (hash k /= h) $
+                         tell "Hash / key mismatch\n"
+                     case snd $ lookup k m of
+                         Nothing ->
+                             tell "Can't lookup key found during traversal\n"
+                         Just v' -> when (v /= v') .
+                             tell $ "Lookup of key found during traversal yields " ++
+                                    "different value\n"
+                     let (m', v') = delete k m
+                     when ((fst $ size m') /= (fst $ size m) - 1) $
+                         tell "Deleting key did not reduce size\n"
+                     when (fromMaybe v v' /= v) $
+                         tell "Delete returned wrong value\n"
               in traverse 0 $ mHAMT m
+             let keysL      = map (fst) $ toList m
+                 allDeleted = foldl' (\r k -> fst $ delete k r) m keysL
+             when (length keysL /= (fst $ size m)) $
+                 tell "Length of toList does not match size\n"
+             unless (null allDeleted && (fst $ size m) == 0) $
+                 tell "Deleting all elements does not result in an empty map\n"
     in  case w of [] -> Nothing
                   xs -> Just xs
 
