@@ -221,34 +221,22 @@ delete k' m =
             | lk /= k   = (t, Nothing)
             | otherwise = (Empty, Just lv)
         go h k s t@(Node ch) =
-            let !idx     = indexNode h s
-                subtree  = ch `V.unsafeIndex` idx
-                (subtree', del') = go h k (s + bitsPerSubkey) subtree
-                ch'      = ch V.// [(idx, subtree')]
-                used     = -- Non-empty slots in the child vector
-                           V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u) [] ch
-            in  case subtree of
-                 Empty -> (t, Nothing)
-                 _ -> case subtree' of
-                    Empty     -> case used of
-                                     (x:[]) -> (Empty, del') -- We removed the last element, delete node
-                                     -- If we deleted our second last element, we
-                                     -- also need to check whether the last child
-                                     -- is a leaf / collision
-                                     (x:y:[]) -> let !lst = ch `V.unsafeIndex` if   idx == x
-                                                                               then y
-                                                                               else x
-                                                 in  case lst of
-                                                         Leaf _ _      -> (lst, del')
-                                                         Collision _ _ -> (lst, del')
-                                                         _             -> (Node ch', del')
-                                     _ -> (Node ch', del')
-                    Node _    -> (Node ch', del')
-                    leafOrCol -> case used of
-                                     -- Last child is a leaf / collision, we
-                                     -- can replace the current node with it
-                                     (x:[]) -> (subtree', del') 
-                                     _      -> (Node ch', del')
+            let !idx              = indexNode h s
+                !subtree          = ch `V.unsafeIndex` idx
+                !(subtree', del') = go h k (s + bitsPerSubkey) subtree
+                !ch'              = ch V.// [(idx, subtree')]
+                !used             = -- Non-empty slots in the updated child vector
+                                    V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u) [] ch'
+            in  case used of
+                []     -> (Empty, del') -- We removed the last element, delete node
+                (x:[]) -> -- If we deleted our second last element, we
+                          -- also need to check whether the last child
+                          -- is a leaf / collision
+                          let !lst = ch' `V.unsafeIndex` x in case lst of
+                              Leaf _ _      -> (lst, del') -- Replace node by leaf
+                              Collision _ _ -> (lst, del') -- ...
+                              _             -> (Node ch', del')
+                _      -> (Node ch', del')
         go h k _ t@(Collision colh ch)
             | colh == h = let (delch', ch') = partition (\(L lk _) -> lk == k) ch
                           in  if   length ch' == 1
@@ -256,7 +244,7 @@ delete k' m =
                                    (Leaf h $ head ch', Just $ (\((L _ lv):[]) -> lv) delch')
                               else (Collision h ch', (\(L _ lv) -> lv) <$> listToMaybe delch')
             | otherwise = (t, Nothing)
-        (m', del) = go (hash k') k' 0 $ mHAMT m
+        !(m', del) = go (hash k') k' 0 $ mHAMT m
     in  ( m { mHAMT = m'
             , mSize = mSize m - if isJust del then 1 else 0
             }
