@@ -42,7 +42,7 @@ import Control.DeepSeq (NFData(rnf))
 data Map k v = Map { mLimit :: !Int
                    , mTick  :: !Word64 -- We use a 'tick', which we keep incrementing, to keep
                                        -- track of how old elements are relative to each other
-                   , mSize  :: !Int -- So size is O(1) instead of O(n)
+                   , mSize  :: !Int -- Cached to make size O(1) instead of O(n)
                    , mHAMT  :: !(HAMT k v)
                    }
 
@@ -51,6 +51,7 @@ instance (NFData k, NFData v) => NFData (Map k v) where
 
 type Hash = Word
 
+{-# INLINE hash #-}
 hash :: H.Hashable a => a -> Hash
 hash = fromIntegral . H.hash
 
@@ -60,7 +61,7 @@ instance (NFData k, NFData v) => NFData (Leaf k v) where
     rnf (L k v) = rnf k `seq` rnf v
 
 -- Note that we don't have bitmap indexing for partially filled nodes. This simplifies the code,
--- but comes at the expensive of memory usage and access
+-- but comes at the expense of memory usage and access
 data HAMT k v = Empty
               | Node !(V.Vector (HAMT k v))
               | Leaf !Hash !(Leaf k v)
@@ -72,28 +73,32 @@ instance (NFData k, NFData v) => NFData (HAMT k v) where
     rnf (Node ch)        = rnf ch
     rnf (Collision _ ch) = rnf ch
 
+{-# INLINE bitsPerSubkey #-}
 bitsPerSubkey :: Int
 bitsPerSubkey = 4
 
+{-# INLINE subkeyMask #-}
 subkeyMask :: Hash
 subkeyMask = (1 `shiftL` bitsPerSubkey) - 1
 
+{-# INLINE maxChildren #-}
 maxChildren :: Int
 maxChildren = 1 `shiftL` bitsPerSubkey
 
 -- Retrieve a leaf child index from a hash and a subkey offset
+{-# INLINE indexNode #-}
 indexNode :: Hash -> Int -> Int
 indexNode h s = fromIntegral $ (h `shiftR` s) .&. subkeyMask
 
 -- Insert a new element into the map, return the new map and the truncated
 -- element (if over the limit)
---{-# INLINEABLE insert #-}
+{-# INLINEABLE insert #-}
 insert :: (Eq k, Hashable k) => k -> v -> Map k v -> (Map k v, Maybe (k, v))
 insert !k !v !m = insertInternal False k v m
 
 data Pair a b = Pair !a !b
 
---{-# INLINE insertInternal #-}
+{-# INLINE insertInternal #-}
 insertInternal :: (Eq k, Hashable k) => Bool -> k -> v -> Map k v -> (Map k v, Maybe (k, v))
 insertInternal !updateOnly !kIns !vIns !m =
     let go !h !k !v !_ Empty = if   updateOnly
