@@ -168,7 +168,7 @@ empty limit | limit >= 1 = Map { mLimit = limit
 
 {-# INLINEABLE size #-}
 size :: Map k v -> (Int, Int)
-size m = (mSize m {-sizeTraverse m-}, mLimit m)
+size m = (mSize m, mLimit m)
 
 -- O(n) size-by-traversal
 sizeTraverse :: Map k v -> Int
@@ -184,7 +184,7 @@ null m = case mHAMT m of Empty -> True; _ -> False
 
 {-# INLINEABLE member #-}
 member :: (Eq k, Hashable k) => k -> Map k v -> Bool
-member k = undefined
+member k m = isJust . snd $ lookup k m
 
 {-# INLINEABLE notMember #-}
 notMember :: (Eq k, Hashable k) => k -> Map k v -> Bool
