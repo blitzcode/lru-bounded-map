@@ -87,50 +87,73 @@ indexNode h s = fromIntegral $ (h `shiftR` s) .&. subkeyMask
 
 -- Insert a new element into the map, return the new map and the truncated
 -- element (if over the limit)
-{-# INLINEABLE insert #-}
+--{-# INLINEABLE insert #-}
 insert :: (Eq k, Hashable k) => k -> v -> Map k v -> (Map k v, Maybe (k, v))
-insert k v m = insertInternal False k v m
+insert !k !v !m = insertInternal False k v m
 
-{-# INLINE insertInternal #-}
+data Pair a b = Pair !a !b
+
+--{-# INLINE insertInternal #-}
 insertInternal :: (Eq k, Hashable k) => Bool -> k -> v -> Map k v -> (Map k v, Maybe (k, v))
-insertInternal updateOnly kIns vIns m =
-    let go h k v _ Empty = Leaf h (L k v)
-        go h k v s t@(Leaf lh li@(L lk lv)) =
+insertInternal !updateOnly !kIns !vIns !m =
+    let go !h !k !v !_ Empty = if   updateOnly
+                           then Pair Empty False -- We're in update mode, no insert
+                           else Pair (Leaf h (L k v)) True 
+        go !h !k !v !s !t@(Leaf !lh !li@(L !lk !lv)) =
             if   h == lh
             then if   k == lk
-                 then Leaf h (L k v) -- Update value
-                 else Collision h [L k v, li] -- We have a hash collision
+                 then Pair (Leaf h (L k v)) False -- Update value
+                 else -- We have a hash collision, insert
+                      if   updateOnly -- ...unless we're in update mode
+                      then Pair t False
+                      else Pair (Collision h [L k v, li]) True
             else -- Expand leaf into interior node
-                 Node $ V.create $ do
-                     vec <- VM.replicate maxChildren Empty
-                     let ia = indexNode h  s
-                         ib = indexNode lh s
-                      in if   ia /= ib -- Subkey collision?
-                         then do VM.write vec ia $ Leaf h (L k v)
-                                 VM.write vec ib t
-                         else -- Collision, add one level
-                              VM.write vec ia $ go h k v (s + bitsPerSubkey) t
-                     return vec
-        go h k v s t@(Node ch) =
-            let !idx      = indexNode h s
-                !subtree  = ch `V.unsafeIndex` idx 
-                !subtree' = -- Traverse into child with matching subkey
-                            go h k v (s + bitsPerSubkey) subtree
-            in  Node $ ch V.// [(idx, subtree')]
-        go h k v s t@(Collision colh ch) =
-            if   h == colh
-            then let traverse [] = [L k v] -- Append new leaf
-                     traverse (l@(L lk lv):xs) =
-                          if   lk == k
-                          then L k v : xs -- Update value
-                          else l : traverse xs
-                 in  Collision h $ traverse ch
-            else -- Expand collision into interior node
-                 go h k v s . Node $ V.create $ do
-                     vec <- VM.replicate maxChildren Empty
-                     VM.write vec (indexNode colh s) t
-                     return vec
-    in  ( m { mHAMT = go (hash kIns) kIns vIns 0 $ mHAMT m
+                 if   updateOnly
+                 then Pair t False
+                 else let !ia           = indexNode h  s
+                          !ib           = indexNode lh s
+                      in Pair ( Node $! V.create $ do
+                                    vec <- VM.replicate maxChildren Empty
+                                    if   ia /= ib -- Subkey collision?
+                                    then do VM.write vec ia $! Leaf h (L k v)
+                                            VM.write vec ib t
+                                    else do -- Collision, add one level
+                                            let !(Pair subtree _) = go h k v (s + bitsPerSubkey) t
+                                            VM.write vec ia $! subtree
+                                    return vec
+                              ) True
+        go !h !k !v !s !t@(Node ch) =
+            let !idx           = indexNode h s
+                !subtree       = ch `V.unsafeIndex` idx 
+                !(Pair subtree' i) = -- Traverse into child with matching subkey
+                                  go h k v (s + bitsPerSubkey) subtree
+            in  subtree' `seq` i `seq` Pair (Node $! ch V.// [(idx, subtree')]) i
+        go !h !k !v !s !t@(Collision colh ch) =
+            if   updateOnly
+            then if   h == colh
+                 then let traverseUO [] = [] -- No append in update mode
+                          traverseUO (l@(L lk lv):xs) =
+                               if   lk == k
+                               then L k v : xs
+                               else l : traverseUO xs
+                      in Pair (Collision h $! traverseUO ch) False
+                 else Pair t False
+            else if   h == colh
+                 then let traverse [] = [L k v] -- Append new leaf
+                          traverse (l@(L lk lv):xs) =
+                               if   lk == k
+                               then L k v : xs -- Update value
+                               else l : traverse xs
+                      in  Pair (Collision h $! traverse ch)
+                               (length ch /= length (traverse ch)) -- TODO: Slow
+                 else -- Expand collision into interior node
+                      go h k v s . Node $! V.create $ do
+                          vec <- VM.replicate maxChildren Empty
+                          VM.write vec (indexNode colh s) t
+                          return vec
+        !(Pair m' i') = go (hash kIns) kIns vIns 0 $ mHAMT m
+    in  m' `seq` i' `seq` mSize m `seq` ( m { mHAMT = m'
+            , mSize = mSize m + if i' then 1 else 0
             }
         , Nothing
         )
@@ -145,14 +168,14 @@ empty limit | limit >= 1 = Map { mLimit = limit
 
 {-# INLINEABLE size #-}
 size :: Map k v -> (Int, Int)
-size m = ({-mSize m-} sizeTraverse m, mLimit m)
+size m = (mSize m {-sizeTraverse m-}, mLimit m)
 
 -- O(n) size-by-traversal
 sizeTraverse :: Map k v -> Int
 sizeTraverse m = go 0 $ mHAMT m
-    where go n Empty = n
-          go n (Leaf _ _) = n + 1
-          go n (Node ch) = V.foldl' (go) n ch
+    where go n Empty            = n
+          go n (Leaf _ _)       = n + 1
+          go n (Node ch)        = V.foldl' (go) n ch
           go n (Collision _ ch) = n + length ch
 
 {-# INLINEABLE null #-}
@@ -178,7 +201,7 @@ toList m =  go [] $ mHAMT m
 -- Lookup element, also update LRU
 {-# INLINEABLE lookup #-}
 lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
-lookup k' m = (go (hash k') k' 0 $ mHAMT m) `seq` (m, go (hash k') k' 0 $ mHAMT m)
+lookup k' m = (m, go (hash k') k' 0 $ mHAMT m)
     where go !_ !_ !_ Empty = Nothing
           go h k _ (Leaf lh (L lk lv))
               | lh /= h   = Nothing
@@ -192,21 +215,23 @@ lookup k' m = (go (hash k') k' 0 $ mHAMT m) `seq` (m, go (hash k') k' 0 $ mHAMT 
 {-# INLINEABLE delete #-}
 delete :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 delete k' m =
-    let go !_ !_ !_ Empty = Empty
-        go h k _ t@(Leaf lh (L lk _))
-            | lh /= h   = t 
-            | lk /= k   = t
-            | otherwise = Empty
+    let go !_ !_ !_ Empty = (Empty, Nothing)
+        go h k _ t@(Leaf lh (L lk lv))
+            | lh /= h   = (t, Nothing)
+            | lk /= k   = (t, Nothing)
+            | otherwise = (Empty, Just lv)
         go h k s t@(Node ch) =
             let !idx     = indexNode h s
-                subtree  = ch `V.unsafeIndex` idx 
-                subtree' = go h k (s + bitsPerSubkey) subtree
+                subtree  = ch `V.unsafeIndex` idx
+                (subtree', del') = go h k (s + bitsPerSubkey) subtree
                 ch'      = ch V.// [(idx, subtree')]
                 used     = -- Non-empty slots in the child vector
                            V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u) [] ch
-            in  case subtree' of
+            in  case subtree of
+                 Empty -> (t, Nothing)
+                 _ -> case subtree' of
                     Empty     -> case used of
-                                     (x:[]) -> Empty -- We removed the last element, delete node
+                                     (x:[]) -> (Empty, del') -- We removed the last element, delete node
                                      -- If we deleted our second last element, we
                                      -- also need to check whether the last child
                                      -- is a leaf / collision
@@ -214,25 +239,28 @@ delete k' m =
                                                                                then y
                                                                                else x
                                                  in  case lst of
-                                                         Leaf _ _      -> lst
-                                                         Collision _ _ -> lst
-                                                         _             -> Node ch'
-                                     _ -> Node ch'
-                    Node _    -> Node ch'
+                                                         Leaf _ _      -> (lst, del')
+                                                         Collision _ _ -> (lst, del')
+                                                         _             -> (Node ch', del')
+                                     _ -> (Node ch', del')
+                    Node _    -> (Node ch', del')
                     leafOrCol -> case used of
-                                     (x:[]) -> subtree' -- Last child is a leaf / collision, we
-                                                        -- can replace the current node with it
-                                     _      -> Node ch'
+                                     -- Last child is a leaf / collision, we
+                                     -- can replace the current node with it
+                                     (x:[]) -> (subtree', del') 
+                                     _      -> (Node ch', del')
         go h k _ t@(Collision colh ch)
             | colh == h = let (delch', ch') = partition (\(L lk _) -> lk == k) ch
                           in  if   length ch' == 1
                               then  -- Deleted last remaining collision, it's a leaf node now
-                                   Leaf h $ head ch'
-                              else Collision h ch'
-            | otherwise = t
-    in  ( m { mHAMT = go (hash k') k' 0 $ mHAMT m
+                                   (Leaf h $ head ch', Just $ (\((L _ lv):[]) -> lv) delch')
+                              else (Collision h ch', (\(L _ lv) -> lv) <$> listToMaybe delch')
+            | otherwise = (t, Nothing)
+        (m', del) = go (hash k') k' 0 $ mHAMT m
+    in  ( m { mHAMT = m'
+            , mSize = mSize m - if isJust del then 1 else 0
             }
-        , Nothing
+        , del
         )
 
 -- Delete and return most recently used item
@@ -268,9 +296,8 @@ valid m =
                                tell "Hash collision node with <2 children\n"
                            forM_ ch $ \(L lk lv) -> checkKey h lk lv
                        Node ch -> do
-                           let used = V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u)
-                                      []
-                                      ch
+                           let used =
+                                 V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u) [] ch
                            when (s + bitsPerSubkey > bitSize (undefined :: Word)) $
                                tell "Subkey shift too large during traversal\n"
                            when (V.length ch /= maxChildren) $
@@ -281,7 +308,7 @@ valid m =
                               case ch V.! head used of
                                   Leaf      _ _ -> tell "Node with single Leaf child\n"
                                   Collision _ _ -> tell "Node with single Collision child\n"
-                                  _         -> return ()
+                                  _             -> return ()
                            forM_ (V.toList ch) $ traverse (s + bitsPerSubkey)
                        Empty -> return ()
                  checkKey h k v = do
@@ -303,8 +330,10 @@ valid m =
                  allDeleted = foldl' (\r k -> fst $ delete k r) m keysL
              when (length keysL /= (fst $ size m)) $
                  tell "Length of toList does not match size\n"
-             unless (null allDeleted && (fst $ size m) == 0) $
+             unless (null allDeleted) $
                  tell "Deleting all elements does not result in an empty map\n"
+             unless ((fst $ size allDeleted) == 0) $
+                 tell "Deleting all elements does not result in a zero size map\n"
     in  case w of [] -> Nothing
                   xs -> Just xs
 

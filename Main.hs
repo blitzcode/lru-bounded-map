@@ -68,9 +68,17 @@ main = do
     when (LBM_LLHM.size (mkLBM_LLHM1k kvL) /= LBM_CHAMT.size (mkLBM_CHAMT1k kvL)) $
         (putStrLn "mkLBM_CHAMT1k size mismatch") >> exitFailure
     -}
+    {-
+    let (_, sizes) = foldl' (\(r, s) k -> let m = fst $ LBM_CHAMT.delete k r in (m, (fst $ LBM_CHAMT.size m) : s)) (mkLBM_CHAMT5k kvL, []) (map (fst) . LBM_CHAMT.toList . mkLBM_CHAMT5k $ kvL)
+    --print sizes
+    forM_ (zip sizes $ [0..]) $ \(a, b) -> printf "%i / %i %s\n" a b $ if (a /= b) then "M" else ""
+    -}
     let allDeleted = foldl' (\r k -> fst $ LBM_CHAMT.delete k r) (mkLBM_CHAMT5k kvL) keysL
-     in when ((fst $ LBM_CHAMT.size allDeleted) /= 0 || isJust (LBM_CHAMT.valid allDeleted)) $
-            (putStrLn "mkLBM_CHAMT5k delete failed") >> exitFailure
+     in do when ((fst $ LBM_CHAMT.size allDeleted) /= 0) $
+              (putStrLn "mkLBM_CHAMT5k delete failed") >> exitFailure
+           case LBM_CHAMT.valid allDeleted of
+               Just err -> (putStrLn $ "delete: mkLBM_CHAMT5k.valid: " ++ err) >> exitFailure
+               Nothing  -> return ()
     {-
     let lookups    = (map (fst) . take 100 . drop 4000 $ kvL) ++
                      (map (fst) . take 100             $ kvL)
