@@ -98,7 +98,7 @@ insertInternal :: (Eq k, Hashable k) => Bool -> k -> v -> Map k v -> (Map k v, M
 insertInternal !updateOnly !kIns !vIns !m =
     let go !h !k !v !_ Empty = if   updateOnly
                            then Pair Empty False -- We're in update mode, no insert
-                           else Pair (Leaf h (L k v)) True 
+                           else Pair (Leaf h (L k v)) True
         go !h !k !v !s !t@(Leaf !lh !li@(L !lk !lv)) =
             if   h == lh
             then if   k == lk
@@ -124,7 +124,7 @@ insertInternal !updateOnly !kIns !vIns !m =
                               ) True
         go !h !k !v !s !t@(Node ch) =
             let !idx           = indexNode h s
-                !subtree       = ch `V.unsafeIndex` idx 
+                !subtree       = ch `V.unsafeIndex` idx
                 !(Pair subtree' i) = -- Traverse into child with matching subkey
                                   go h k v (s + bitsPerSubkey) subtree
             in  subtree' `seq` i `seq` Pair (Node $! ch V.// [(idx, subtree')]) i
@@ -190,13 +190,13 @@ member k m = isJust . snd $ lookup k m
 notMember :: (Eq k, Hashable k) => k -> Map k v -> Bool
 notMember k m = not $ member k m
 
+{-# INLINEABLE toList #-}
 toList :: Map k v -> [(k, v)]
-toList m =  go [] $ mHAMT m
+toList m = go [] $ mHAMT m
     where go l Empty            = l
           go l (Leaf _ (L k v)) = (k, v) : l
           go l (Node ch)        = V.foldl' (\l' n -> go l' n) l ch
           go l (Collision _ ch) = foldl' (\l' (L k v) -> (k, v) : l') l ch
-{-# INLINEABLE toList #-}
 
 -- Lookup element, also update LRU
 {-# INLINEABLE lookup #-}
