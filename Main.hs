@@ -20,6 +20,7 @@ import qualified Data.IntMap.Strict as IM
 import qualified LRUBoundedMap_LinkedListHashMap as LBM_LLHM
 import qualified LRUBoundedMap_DoubleMapBTree as LBM_DMBT
 import qualified LRUBoundedMap_CustomHAMT as LBM_CHAMT
+import qualified LRUBoundedMap_CustomHashedTrie as LBM_CHT
 
 criterionCfg :: Config
 criterionCfg = defaultConfig { cfgPerformGC = ljust True
@@ -43,41 +44,43 @@ main = do
         mkLBM_DMBT1k  = foldl' (\r (k, v) -> fst $ LBM_DMBT.insert k v r)  (LBM_DMBT.empty  1000)
         mkLBM_CHAMT5k = foldl' (\r (k, v) -> fst $ LBM_CHAMT.insert k v r) (LBM_CHAMT.empty 5000)
         mkLBM_CHAMT1k = foldl' (\r (k, v) -> fst $ LBM_CHAMT.insert k v r) (LBM_CHAMT.empty 1000)
-    -- Some basic tests for the LRU HAMT map
-    case LBM_CHAMT.valid $ mkLBM_CHAMT5k kvL of
-        Just err -> (putStrLn $ "mkLBM_CHAMT5k.valid: " ++ err) >> exitFailure
+        mkLBM_CHT5k   = foldl' (\r (k, v) -> fst $ LBM_CHT.insert k v r)   (LBM_CHT.empty   5000)
+        mkLBM_CHT1k   = foldl' (\r (k, v) -> fst $ LBM_CHT.insert k v r)   (LBM_CHT.empty   1000)
+    -- Some basic tests for the LRU CT map
+    case LBM_CHT.valid $ mkLBM_CHT5k kvL of
+        Just err -> (putStrLn $ "mkLBM_CHT5k.valid: " ++ err) >> exitFailure
         Nothing  -> return ()
-    case LBM_CHAMT.valid $ mkLBM_CHAMT1k kvL of
-        Just err -> (putStrLn $ "mkLBM_CHAMT1k.valid: " ++ err) >> exitFailure
+    case LBM_CHT.valid $ mkLBM_CHT1k kvL of
+        Just err -> (putStrLn $ "mkLBM_CHT1k.valid: " ++ err) >> exitFailure
         Nothing  -> return ()
     forM_ (LBM_LLHM.view $ mkLBM_LLHM5k kvL) $ \(k, v) ->
-        case LBM_CHAMT.lookup k (mkLBM_CHAMT5k kvL) of
+        case LBM_CHT.lookup k (mkLBM_CHT5k kvL) of
           (_, Just v') -> when (v /= v') $ do
-                              putStrLn $ "mkLBM_CHAMT5k invalid value for key: " ++ B8.unpack k
+                              putStrLn $ "mkLBM_CHT5k invalid value for key: " ++ B8.unpack k
                               exitFailure
-          (_, Nothing) -> (putStrLn $ "mkLBM_CHAMT5k missing key: " ++ B8.unpack k) >> exitFailure
-    when (LBM_LLHM.size (mkLBM_LLHM5k kvL) /= LBM_CHAMT.size (mkLBM_CHAMT5k kvL)) $
-        (putStrLn "mkLBM_CHAMT5k size mismatch") >> exitFailure
+          (_, Nothing) -> (putStrLn $ "mkLBM_CHT5k missing key: " ++ B8.unpack k) >> exitFailure
+    when (LBM_LLHM.size (mkLBM_LLHM5k kvL) /= LBM_CHT.size (mkLBM_CHT5k kvL)) $
+        (putStrLn "mkLBM_CHT5k size mismatch") >> exitFailure
     forM_ (LBM_LLHM.view $ mkLBM_LLHM1k kvL) $ \(k, v) ->
-        case LBM_CHAMT.lookup k (mkLBM_CHAMT1k kvL) of
+        case LBM_CHT.lookup k (mkLBM_CHT1k kvL) of
           (_, Just v') -> when (v /= v') $ do
-                              putStrLn $ "mkLBM_CHAMT1k invalid value for key: " ++ B8.unpack k
+                              putStrLn $ "mkLBM_CHT1k invalid value for key: " ++ B8.unpack k
                               exitFailure
-          (_, Nothing) -> (putStrLn $ "mkLBM_CHAMT1k missing key: " ++ B8.unpack k) >> exitFailure
+          (_, Nothing) -> (putStrLn $ "mkLBM_CHT1k missing key: " ++ B8.unpack k) >> exitFailure
     {-
-    when (LBM_LLHM.size (mkLBM_LLHM1k kvL) /= LBM_CHAMT.size (mkLBM_CHAMT1k kvL)) $
-        (putStrLn "mkLBM_CHAMT1k size mismatch") >> exitFailure
+    when (LBM_LLHM.size (mkLBM_LLHM1k kvL) /= LBM_CHT.size (mkLBM_CHT1k kvL)) $
+        (putStrLn "mkLBM_CHT1k size mismatch") >> exitFailure
     -}
     {-
-    let (_, sizes) = foldl' (\(r, s) k -> let m = fst $ LBM_CHAMT.delete k r in (m, (fst $ LBM_CHAMT.size m) : s)) (mkLBM_CHAMT5k kvL, []) (map (fst) . LBM_CHAMT.toList . mkLBM_CHAMT5k $ kvL)
+    let (_, sizes) = foldl' (\(r, s) k -> let m = fst $ LBM_CHT.delete k r in (m, (fst $ LBM_CHT.size m) : s)) (mkLBM_CHT5k kvL, []) (map (fst) . LBM_CHT.toList . mkLBM_CHT5k $ kvL)
     --print sizes
     forM_ (zip sizes $ [0..]) $ \(a, b) -> printf "%i / %i %s\n" a b $ if (a /= b) then "M" else ""
     -}
-    let allDeleted = foldl' (\r k -> fst $ LBM_CHAMT.delete k r) (mkLBM_CHAMT5k kvL) keysL
-     in do when ((fst $ LBM_CHAMT.size allDeleted) /= 0) $
-              (putStrLn "mkLBM_CHAMT5k delete failed") >> exitFailure
-           case LBM_CHAMT.valid allDeleted of
-               Just err -> (putStrLn $ "delete: mkLBM_CHAMT5k.valid: " ++ err) >> exitFailure
+    let allDeleted = foldl' (\r k -> fst $ LBM_CHT.delete k r) (mkLBM_CHT5k kvL) keysL
+     in do when ((fst $ LBM_CHT.size allDeleted) /= 0) $
+              (putStrLn "mkLBM_CHT5k delete failed") >> exitFailure
+           case LBM_CHT.valid allDeleted of
+               Just err -> (putStrLn $ "delete: mkLBM_CHT5k.valid: " ++ err) >> exitFailure
                Nothing  -> return ()
     {-
     let lookups    = (map (fst) . take 100 . drop 4000 $ kvL) ++
@@ -90,19 +93,19 @@ main = do
                                        lookups
                               )
                               insertions
-        testMap    = foldl' (\r (k, v) -> fst $ LBM_CHAMT.insert k v r)
-                            ( foldl' (\r k -> fst $ LBM_CHAMT.lookup k r)
-                                     (mkLBM_CHAMT1k kvL)
+        testMap    = foldl' (\r (k, v) -> fst $ LBM_CHT.insert k v r)
+                            ( foldl' (\r k -> fst $ LBM_CHT.lookup k r)
+                                     (mkLBM_CHT1k kvL)
                                      lookups
                             )
                             insertions
-        test       = sort LBM_CHAMT.toList $ testMap
-     in do case LBM_CHAMT.valid testMap of
+        test       = sort LBM_CHT.toList $ testMap
+     in do case LBM_CHT.valid testMap of
                Just err -> do putStrLn $ "lookup / insert / delete test valid: " ++ err
                               exitFailure
                Nothing  -> return ()
            when (test /= reference) $
-              (putStrLn "mkLBM_CHAMT1k lookup / insert / delete comparison failed") >> exitFailure
+              (putStrLn "mkLBM_CHT1k lookup / insert / delete comparison failed") >> exitFailure
     -}
     -- Make sure we build the initial maps
     rnf (mkDMS           kvL) `seq`
@@ -114,6 +117,8 @@ main = do
       rnf (mkLBM_DMBT1k  kvL) `seq`
       rnf (mkLBM_CHAMT5k kvL) `seq`
       rnf (mkLBM_CHAMT1k kvL) `seq`
+      rnf (mkLBM_CHT5k   kvL) `seq`
+      rnf (mkLBM_CHT1k   kvL) `seq`
       -- Run criterion benchmarks
       defaultMainWith
         criterionCfg
@@ -132,6 +137,8 @@ main = do
           , bench "LBM_DoubleMapBTree (limit 1k)"      . nf (mkLBM_DMBT1k)  $ kvL
           , bench "LBM_CustomHAMT (limit 5k)"          . nf (mkLBM_CHAMT5k) $ kvL
           , bench "LBM_CustomHAMT (limit 1k)"          . nf (mkLBM_CHAMT1k) $ kvL
+          , bench "LBM_CustomHashedTrie (limit 5k)"    . nf (mkLBM_CHT5k)    $ kvL
+          , bench "LBM_CustomHashedTrie (limit 1k)"    . nf (mkLBM_CHT1k)    $ kvL
           ]
         , bgroup ("delete " ++ numK)
           [
@@ -153,6 +160,10 @@ main = do
               (foldl' (\r k -> fst $ LBM_CHAMT.delete k r) (mkLBM_CHAMT5k kvL)) $ keysL
           , bench "LBM_CustomHAMT (limit 1k)" . nf
               (foldl' (\r k -> fst $ LBM_CHAMT.delete k r) (mkLBM_CHAMT1k kvL)) $ keysL
+          , bench "LBM_CustomHashedTrie (limit 5k)" . nf
+              (foldl' (\r k -> fst $ LBM_CHT.delete k r) (mkLBM_CHT5k kvL)) $ keysL
+          , bench "LBM_CustomHashedTrie (limit 1k)" . nf
+              (foldl' (\r k -> fst $ LBM_CHT.delete k r) (mkLBM_CHT1k kvL)) $ keysL
           ]
         , bgroup ("lookup (w/ LRU update) " ++ numK)
           [
@@ -203,6 +214,20 @@ main = do
                     (r', a + fromMaybe 0 a')) $
                   LBM_CHAMT.lookup k r)
                 (mkLBM_CHAMT1k kvL, 0)) $
+                keysL
+          , bench "LBM_CustomHashedTrie (limit 5k)" . nf
+              (foldl' (\(r, a) k ->
+                  (\(r', a') ->
+                    (r', a + fromMaybe 0 a')) $
+                  LBM_CHT.lookup k r)
+                (mkLBM_CHT5k kvL, 0)) $
+                keysL
+          , bench "LBM_CustomHashedTrie (limit 1k)" . nf
+              (foldl' (\(r, a) k ->
+                  (\(r', a') ->
+                    (r', a + fromMaybe 0 a')) $
+                  LBM_CHT.lookup k r)
+                (mkLBM_CHT1k kvL, 0)) $
                 keysL
           ]
         ]
