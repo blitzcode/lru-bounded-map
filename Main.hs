@@ -18,9 +18,9 @@ import qualified Data.Map.Strict as M
 import qualified Data.HashMap.Strict as HM
 import qualified Data.IntMap.Strict as IM
 import qualified LRUBoundedMap_LinkedListHashMap as LBM_LLHM
-import qualified LRUBoundedMap_DoubleMapBTree as LBM_DMBT
-import qualified LRUBoundedMap_CustomHAMT as LBM_CHAMT
-import qualified LRUBoundedMap_CustomHashedTrie as LBM_CHT
+import qualified LRUBoundedMap_DoubleMapBTree    as LBM_DMBT
+import qualified LRUBoundedMap_CustomHAMT        as LBM_CHAMT
+import qualified LRUBoundedMap_CustomHashedTrie  as LBM_CHT
 
 criterionCfg :: Config
 criterionCfg = defaultConfig { cfgPerformGC = ljust True
@@ -67,22 +67,14 @@ main = do
                               putStrLn $ "mkLBM_CHT1k invalid value for key: " ++ B8.unpack k
                               exitFailure
           (_, Nothing) -> (putStrLn $ "mkLBM_CHT1k missing key: " ++ B8.unpack k) >> exitFailure
-    {-
     when (LBM_LLHM.size (mkLBM_LLHM1k kvL) /= LBM_CHT.size (mkLBM_CHT1k kvL)) $
         (putStrLn "mkLBM_CHT1k size mismatch") >> exitFailure
-    -}
-    {-
-    let (_, sizes) = foldl' (\(r, s) k -> let m = fst $ LBM_CHT.delete k r in (m, (fst $ LBM_CHT.size m) : s)) (mkLBM_CHT5k kvL, []) (map (fst) . LBM_CHT.toList . mkLBM_CHT5k $ kvL)
-    --print sizes
-    forM_ (zip sizes $ [0..]) $ \(a, b) -> printf "%i / %i %s\n" a b $ if (a /= b) then "M" else ""
-    -}
     let allDeleted = foldl' (\r k -> fst $ LBM_CHT.delete k r) (mkLBM_CHT5k kvL) keysL
      in do when ((fst $ LBM_CHT.size allDeleted) /= 0) $
               (putStrLn "mkLBM_CHT5k delete failed") >> exitFailure
            case LBM_CHT.valid allDeleted of
                Just err -> (putStrLn $ "delete: mkLBM_CHT5k.valid: " ++ err) >> exitFailure
                Nothing  -> return ()
-    {-
     let lookups    = (map (fst) . take 100 . drop 4000 $ kvL) ++
                      (map (fst) . take 100             $ kvL)
         insertions = [(B8.pack $ show i, i) | i <- [1..50]]
@@ -99,14 +91,15 @@ main = do
                                      lookups
                             )
                             insertions
-        test       = sort LBM_CHT.toList $ testMap
+        test       = sort $ LBM_CHT.toList testMap
      in do case LBM_CHT.valid testMap of
                Just err -> do putStrLn $ "lookup / insert / delete test valid: " ++ err
                               exitFailure
                Nothing  -> return ()
-           when (test /= reference) $
-              (putStrLn "mkLBM_CHT1k lookup / insert / delete comparison failed") >> exitFailure
-    -}
+           when (test /= reference) $ do
+              putStrLn "mkLBM_CHT1k lookup / insert / delete comparison failed"
+              print $ reference \\ test
+              exitFailure
     -- Make sure we build the initial maps
     rnf (mkDMS           kvL) `seq`
       rnf (mkDHMS        kvL) `seq`
@@ -173,62 +166,22 @@ main = do
               (foldl' (\r k -> (r +) . fromJust . HM.lookup k $ mkDHMS kvL) 0) $ keysL
           , bench "Data.IntMap.Strict (no LRU&limit)" . nf
               (foldl' (\r k -> (r +) . fromJust . IM.lookup (hash k) $ mkDIMS kvL) 0) $ keysL
-          , bench "LBM_LinkedListHashMap (limit 5k)" . nf
-              (foldl' (\(r, a) k ->
-                  (\(r', a') ->
-                    (r', a + fromMaybe 0 a')) $
-                  LBM_LLHM.lookup k r)
-                (mkLBM_LLHM5k kvL, 0)) $
-                keysL
-          , bench "LBM_LinkedListHashMap (limit 1k)" . nf
-              (foldl' (\(r, a) k ->
-                  (\(r', a') ->
-                    (r', a + fromMaybe 0 a')) $
-                  LBM_LLHM.lookup k r)
-                (mkLBM_LLHM1k kvL, 0)) $
-                keysL
-          , bench "LBM_DoubleMapBTree (limit 5k)" . nf
-              (foldl' (\(r, a) k ->
-                  (\(r', a') ->
-                    (r', a + fromMaybe 0 a')) $
-                  LBM_DMBT.lookup k r)
-                (mkLBM_DMBT5k kvL, 0)) $
-                keysL
-          , bench "LBM_DoubleMapBTree (limit 1k)" . nf
-              (foldl' (\(r, a) k ->
-                  (\(r', a') ->
-                    (r', a + fromMaybe 0 a')) $
-                  LBM_DMBT.lookup k r)
-                (mkLBM_DMBT1k kvL, 0)) $
-                keysL
-          , bench "LBM_CustomHAMT (limit 5k)" . nf
-              (foldl' (\(r, a) k ->
-                  (\(r', a') ->
-                    (r', a + fromMaybe 0 a')) $
-                  LBM_CHAMT.lookup k r)
-                (mkLBM_CHAMT5k kvL, 0)) $
-                keysL
-          , bench "LBM_CustomHAMT (limit 1k)" . nf
-              (foldl' (\(r, a) k ->
-                  (\(r', a') ->
-                    (r', a + fromMaybe 0 a')) $
-                  LBM_CHAMT.lookup k r)
-                (mkLBM_CHAMT1k kvL, 0)) $
-                keysL
-          , bench "LBM_CustomHashedTrie (limit 5k)" . nf
-              (foldl' (\(r, a) k ->
-                  (\(r', a') ->
-                    (r', a + fromMaybe 0 a')) $
-                  LBM_CHT.lookup k r)
-                (mkLBM_CHT5k kvL, 0)) $
-                keysL
-          , bench "LBM_CustomHashedTrie (limit 1k)" . nf
-              (foldl' (\(r, a) k ->
-                  (\(r', a') ->
-                    (r', a + fromMaybe 0 a')) $
-                  LBM_CHT.lookup k r)
-                (mkLBM_CHT1k kvL, 0)) $
-                keysL
+          , lkBench "LBM_LinkedListHashMap (limit 5k)" (LBM_LLHM.lookup)  (mkLBM_LLHM5k kvL)  keysL
+          , lkBench "LBM_LinkedListHashMap (limit 1k)" (LBM_LLHM.lookup)  (mkLBM_LLHM1k kvL)  keysL
+          , lkBench "LBM_DoubleMapBTree (limit 5k)"    (LBM_DMBT.lookup)  (mkLBM_DMBT5k kvL)  keysL
+          , lkBench "LBM_DoubleMapBTree (limit 1k)"    (LBM_DMBT.lookup)  (mkLBM_DMBT1k kvL)  keysL
+          , lkBench "LBM_CustomHAMT (limit 5k)"        (LBM_CHAMT.lookup) (mkLBM_CHAMT5k kvL) keysL
+          , lkBench "LBM_CustomHAMT (limit 1k)"        (LBM_CHAMT.lookup) (mkLBM_CHAMT1k kvL) keysL
+          , lkBench "LBM_CustomHashedTrie (limit 5k)"  (LBM_CHT.lookup)   (mkLBM_CHT5k kvL)   keysL
+          , lkBench "LBM_CustomHashedTrie (limit 1k)"  (LBM_CHT.lookup)   (mkLBM_CHT1k kvL)   keysL
           ]
         ]
+    where {-# INLINE lkBench #-}
+          lkBench name lk fullMap list = bench name . nf
+              (foldl' (\(r, a) k ->
+                  (\(r', a') ->
+                    (r', a + fromMaybe 0 a')) $
+                  lk k r)
+                (fullMap, 0)) $
+                list
 

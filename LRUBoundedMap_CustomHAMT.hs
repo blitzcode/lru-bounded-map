@@ -62,7 +62,7 @@ hash = fromIntegral . H.hash
 data Leaf k v = L !k !v !Word64 -- LRU tick
 
 instance (NFData k, NFData v) => NFData (Leaf k v) where
-    rnf (L k v t) = rnf k `seq` rnf v `seq` rnf t
+    rnf (L k v t) = rnf k `seq` rnf v
 
 data OldNew = OldNew !Int !Int
 
