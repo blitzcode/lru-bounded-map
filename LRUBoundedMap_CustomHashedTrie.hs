@@ -24,8 +24,8 @@ import Data.Hashable (Hashable)
 import Data.Bits
 import Data.Maybe
 import Data.Word
-import Data.Foldable (minimumBy, maximumBy)
-import Data.List (find, partition, foldl')
+import Data.List hiding (lookup, delete, null, insert)
+import qualified Data.List (null)
 import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Writer
@@ -356,49 +356,61 @@ valid m =
                  tell "Mismatch beween cached and actual size\n"
              when ((fst $ size m) > mLimit m)
                  $ tell "Size over the limit\n"
-             let traverse s minParent maxParent t =
-                   case t of
-                       Leaf h (L lk lv lt) -> checkKey h lk lv lt minParent maxParent
-                       Collision h ch -> do
-                           when (length ch < 2) $
-                               tell "Hash collision node with <2 children\n"
-                           forM_ ch $ \(L lk lv lt) -> checkKey h lk lv lt minParent maxParent
-                       Node mint maxt a b -> do
-                           when (s + 1 > bitSize (undefined :: Word)) $
-                               tell "Subkey shift too large during traversal\n"
-                           when (mint < minParent || maxt > maxParent) $
-                               tell "Node min/max tick outside of parent interval\n"
-                           let used = foldl' (\u t' -> case t' of Empty -> u; _ -> t' : u)
-                                      []
-                                      $ a : b : []
-                           when (length used == 0) $
-                               tell "Node with only empty children\n"
-                           when (length used == 1) $
-                              case head used of
-                                  Leaf      _ _ -> tell "Node with single Leaf child\n"
-                                  Collision _ _ -> tell "Node with single Collision child\n"
-                                  _             -> return ()
-                           forM_ used $ traverse (s + 1) mint maxt
-                       Empty -> return ()
-                 checkKey h k v tick minParent maxParent = do
-                     when (hash k /= h) $
-                         tell "Hash / key mismatch\n"
-                     when (tick >= mTick m) $
-                         tell "Tick of leaf matches / exceeds current tick\n"
-                     when (tick < minParent || tick > maxParent) $
-                         tell "Leaf min/max tick outside of parent interval\n"
-                     case snd $ lookup k m of
-                         Nothing ->
-                             tell "Can't lookup key found during traversal\n"
-                         Just v' -> when (v /= v') .
-                             tell $ "Lookup of key found during traversal yields " ++
-                                    "different value\n"
-                     let (m', v') = delete k m
-                     when ((fst $ size m') /= (fst $ size m) - 1) $
-                         tell "Deleting key did not reduce size\n"
-                     when (fromMaybe v v' /= v) $
-                         tell "Delete returned wrong value\n"
-              in traverse 0 minBound maxBound $ mTrie m
+             allTicks <-
+               let traverse s minParent maxParent ticks t =
+                     case t of
+                         Leaf h (L lk lv lt) ->
+                             (: ticks) <$> checkKey h lk lv lt minParent maxParent
+                         Collision h ch -> do
+                             -- tell "Found collision\n"
+                             when (length ch < 2) $
+                                 tell "Hash collision node with <2 children\n"
+                             foldM (\xs (L lk lv lt) ->
+                                       (: xs) <$> checkKey h lk lv lt minParent maxParent
+                                   )
+                                   ticks
+                                   ch
+                         Node mint maxt a b -> do
+                             when (s + 1 > bitSize (undefined :: Word)) $
+                                 tell "Subkey shift too large during traversal\n"
+                             when (mint < minParent || maxt > maxParent) $
+                                 tell "Node min/max tick outside of parent interval\n"
+                             let used = foldl' (\u t' -> case t' of Empty -> u; _ -> t' : u)
+                                        []
+                                        $ a : b : []
+                             when (length used == 0) $
+                                 tell "Node with only empty children\n"
+                             when (length used == 1) $
+                                case head used of
+                                    Leaf      _ _ -> tell "Node with single Leaf child\n"
+                                    Collision _ _ -> tell "Node with single Collision child\n"
+                                    _             -> return ()
+                             foldM (\xs c -> traverse (s + 1) mint maxt xs c) ticks used
+                         Empty -> return ticks
+                   checkKey h k v tick minParent maxParent = do
+                       when (hash k /= h) $
+                           tell "Hash / key mismatch\n"
+                       when (tick >= mTick m) $
+                           tell "Tick of leaf matches / exceeds current tick\n"
+                       when (tick < minParent || tick > maxParent) $
+                           tell "Leaf min/max tick outside of parent interval\n"
+                       case snd $ lookup k m of
+                           Nothing ->
+                               tell "Can't lookup key found during traversal\n"
+                           Just v' -> when (v /= v') .
+                               tell $ "Lookup of key found during traversal yields " ++
+                                      "different value\n"
+                       let (m', v') = delete k m
+                       when ((fst $ size m') /= (fst $ size m) - 1) $
+                           tell "Deleting key did not reduce size\n"
+                       when (fromMaybe v v' /= v) $
+                           tell "Delete returned wrong value\n"
+                       return tick
+               in  traverse 0 minBound maxBound [] $ mTrie m
+             when (length allTicks /= mSize m) $
+                 tell "Collection of all tick values used resulted in different size that mSize\n"
+             unless (Data.List.null . filter (\x -> length x /= 1) . group . sort $ allTicks) $
+                 tell "Duplicate tick value found\n"
              let keysL      = map (fst) $ toList m
                  allDeleted = foldl' (\r k -> fst $ delete k r) m keysL
              when (length keysL /= (fst $ size m)) $
