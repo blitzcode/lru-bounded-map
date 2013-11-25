@@ -1,9 +1,12 @@
 
+{-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import Data.List
+-- import Data.Function
 import Data.Maybe
 import Data.Hashable
 import Text.Printf
@@ -31,7 +34,22 @@ criterionCfg = defaultConfig { cfgPerformGC = ljust True
 main :: IO ()
 main = do
     -- Load test set of representative keys
-    keysL <- B8.lines <$> B.readFile "keys.txt"
+    keysL' <- B8.lines <$> B.readFile "keys.txt"
+    -- Insert a known hash collision
+    let keysL = "479199" : "662782" : drop 2 keysL'
+    when (hash (keysL !! 0) /= hash (keysL !! 1)) $
+        putStrLn "Warning: Hash collision not present, might not test this aspect properly"
+    -- Find us some hash collisions
+    {-
+    let collisions = filter (\x -> length x /= 1)
+                   . groupBy ((==)    `on` fst)
+                   . sortBy  (compare `on` fst)
+                   . map (\x -> (hash . B8.pack . show $ x, x))
+                   $ ([1..1000000] :: [Int])
+    unless (null collisions) $ do
+        void $ printf "Collision(s) found: %s\n" $ show collisions
+        exitFailure
+    -}
     let numK  = printf "(%ik keys)" $ length keysL `div` 1000
         kvL   = zip keysL ([1..] :: [Int])
         -- Make initial maps for delete / lookup benchmarks
@@ -130,8 +148,8 @@ main = do
           , bench "LBM_DoubleMapBTree (limit 1k)"      . nf (mkLBM_DMBT1k)  $ kvL
           , bench "LBM_CustomHAMT (limit 5k)"          . nf (mkLBM_CHAMT5k) $ kvL
           , bench "LBM_CustomHAMT (limit 1k)"          . nf (mkLBM_CHAMT1k) $ kvL
-          , bench "LBM_CustomHashedTrie (limit 5k)"    . nf (mkLBM_CHT5k)    $ kvL
-          , bench "LBM_CustomHashedTrie (limit 1k)"    . nf (mkLBM_CHT1k)    $ kvL
+          , bench "LBM_CustomHashedTrie (limit 5k)"    . nf (mkLBM_CHT5k)   $ kvL
+          , bench "LBM_CustomHashedTrie (limit 1k)"    . nf (mkLBM_CHT1k)   $ kvL
           ]
         , bgroup ("delete " ++ numK)
           [
