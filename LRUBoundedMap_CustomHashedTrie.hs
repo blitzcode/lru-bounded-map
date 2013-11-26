@@ -38,7 +38,55 @@ import Control.DeepSeq (NFData(rnf))
 -- remove the least recently used one overflow. The other bound allows to retrieve the
 -- item which was inserted / touched last
 
-type Tick = Word64 -- TODO: 64 bit integers are incredibly slow on 32bit GHC, huge speedup
+
+{-
+data Tick64 = Tick64 !Word !Word
+              deriving Eq
+
+instance Ord Tick64 where
+    compare (Tick64 la ha) (Tick64 lb hb) = if   ha == hb
+                                            then compare la lb
+                                            else compare ha hb
+    max a@(Tick64 la ha) b@(Tick64 lb hb) = if   ha == hb
+                                            then if la <= lb then b else a
+                                            else if ha <= hb then b else a
+    min a@(Tick64 la ha) b@(Tick64 lb hb) = if   ha == hb
+                                            then if la <= lb then a else b
+                                            else if ha <= hb then a else b
+
+instance Bounded Tick64 where
+    maxBound = Tick64 maxBound maxBound
+    minBound = Tick64 minBound minBound
+
+instance NFData Tick64 where
+    rnf (Tick64 l h) = rnf l `seq` rnf h
+
+nextTick :: Tick64 -> Tick64
+nextTick (Tick64 l h) = if   l == maxBound
+                        then Tick64 0 (h + 1)
+                        else Tick64 (l + 1) h
+-}
+
+newtype Tick64 = Tick64 { tickDouble :: Double }
+                 deriving (Eq, Ord)
+
+nextTick :: Tick64 -> Tick64
+nextTick (Tick64 t) = Tick64 (t + 1)
+
+instance NFData Tick64 where
+    rnf _ = ()
+
+instance Bounded Tick64 where
+    maxBound = Tick64 9007199254740992
+    minBound = Tick64 0
+
+{-
+type Tick64 = Int
+nextTick :: Tick64 -> Tick64
+nextTick = (+ 1)
+-}
+
+type Tick = Tick64 -- TODO: 64 bit integers are incredibly slow on 32bit GHC, huge speedup
                    --       when using a Word instead
 
 data Map k v = Map { mLimit :: !Int
@@ -184,7 +232,7 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
         !tick = mTick m
         !inserted = m { mTrie = trie'
                       , mSize = mSize m + if didInsert then 1 else 0
-                      , mTick = tick + 1
+                      , mTick = nextTick tick
                       }
     in  inserted `seq` mSize m `seq`
         -- Overflow?
@@ -194,7 +242,7 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
 
 empty :: Int -> Map k v
 empty limit | limit >= 1 = Map { mLimit = limit
-                               , mTick  = 0
+                               , mTick  = minBound
                                , mSize  = 0
                                , mTrie  = Empty
                                }
@@ -235,7 +283,7 @@ toList m = go [] $ mTrie m
 -- Lookup element, also update LRU
 {-# INLINEABLE lookup #-}
 lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
-lookup k' m = ( m { mTick = tick + 1
+lookup k' m = ( m { mTick = nextTick tick
                   , mTrie = trie'
                   }
               , mkey
