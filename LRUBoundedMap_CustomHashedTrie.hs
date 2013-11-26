@@ -39,7 +39,6 @@ import Control.DeepSeq (NFData(rnf))
 -- remove the least recently used one overflow. The other bound allows to retrieve the
 -- item which was inserted / touched last
 
-
 {-
 data Tick64 = Tick64 !Word !Word
               deriving Eq
@@ -293,21 +292,23 @@ lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 lookup k' m = ( m { mTick = nextTick $ mTick m
                   , mTrie = trie'
                   }
-              , mkey
+              , mvalue
               )
     where go :: Eq k => Hash -> k -> Tick -> Int -> Trie k v -> (Maybe v, Trie k v)
-          go !_ !_ !_ !_ Empty = (Nothing, Empty)
+          go !_ !_ _ !_ Empty = (Nothing, Empty)
           go h k tick _ t@(Leaf lh (L lk lv lt))
               | lh /= h   = (Nothing, t)
               | lk /= k   = (Nothing, t)
               | otherwise = (Just lv, Leaf lh (L lk lv tick))
-          go !h k tick s (Node !mina !maxa !minb !maxb !a !b) =
+          go h k tick s t@(Node mina maxa minb maxb a b) =
               -- Traverse into child with matching subkey
-              let !(!ins, !t')      = go h k tick (s + 1) (if isA h s then a else b)
-                  !(!mint', !maxt') = minMaxFromTrie t'
-              in  if   isA h s
-                  then (ins, Node mint' maxt' minb  maxb  t' b )
-                  else (ins, Node mina  maxa  mint' maxt' a  t')
+              let !(!ins, !t') = go h k tick (s + 1) (if isA h s then a else b)
+              in  if   isNothing ins -- Don't rebuild node if we don't need to update the LRU
+                  then (Nothing, t)
+                  else let !(!mint', !maxt') = minMaxFromTrie t'
+                       in  if   isA h s
+                           then (ins, Node mint' maxt' minb  maxb  t' b )
+                           else (ins, Node mina  maxa  mint' maxt' a  t')
           go h k tick _ t@(Collision colh ch)
               | colh == h = -- Search child list for matching key, rebuild with updated tick
                             foldl' (\(r, Collision _ ch') l@(L lk lv _) ->
@@ -318,7 +319,7 @@ lookup k' m = ( m { mTick = nextTick $ mTick m
                                    (Nothing, Collision colh [])
                                    ch
               | otherwise = (Nothing, t)
-          !(!mkey, !trie') = go (hash k') k' (mTick m) 0 $ mTrie m
+          !(!mvalue, !trie') = go (hash k') k' (mTick m) 0 $ mTrie m
 
 {-# INLINEABLE lookupNoLRU #-}
 lookupNoLRU :: (Eq k, Hashable k) => k -> Map k v -> Maybe v
