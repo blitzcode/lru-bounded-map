@@ -13,6 +13,7 @@ module LRUBoundedMap_CustomHAMT ( Map
                                 , update
                                 , delete
                                 , lookup
+                                , lookupNoLRU
                                 , popOldest
                                 , popNewest
                                 , valid
@@ -104,6 +105,9 @@ insert !k !v !m = insertInternal False k v m
 
 data Pair a b = Pair !a !b
 
+-- TODO: Made a terrible mess out of this function, split into insert / update case,
+--       remove most of the strictness annotations, lots of optimization potential
+-- TODO: No LRU update implemented
 {-# INLINE insertInternal #-}
 insertInternal :: (Eq k, Hashable k) => Bool -> k -> v -> Map k v -> (Map k v, Maybe (k, v))
 insertInternal !updateOnly !kIns !vIns !m =
@@ -212,7 +216,7 @@ toList m = go [] $ mHAMT m
           go l (Node _ ch)        = V.foldl' (\l' n -> go l' n) l ch
           go l (Collision _ ch)   = foldl' (\l' (L k v _) -> (k, v) : l') l ch
 
--- Lookup element, also update LRU
+-- Lookup element, also update LRU (TODO: No LRU update implemented)
 {-# INLINEABLE lookup #-}
 lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 lookup k' m = (m, go (hash k') k' 0 $ mHAMT m)
@@ -226,6 +230,21 @@ lookup k' m = (m, go (hash k') k' 0 $ mHAMT m)
               | colh == h = (\(L _ lv _) -> lv) <$> find (\(L lk _ _) -> lk == k) ch
               | otherwise = Nothing
 
+-- Lookup element
+{-# INLINEABLE lookupNoLRU #-}
+lookupNoLRU :: (Eq k, Hashable k) => k -> Map k v -> Maybe v
+lookupNoLRU k' m = go (hash k') k' 0 $ mHAMT m
+    where go !_ !_ !_ Empty = Nothing
+          go h k _ (Leaf lh (L lk lv lt))
+              | lh /= h   = Nothing
+              | lk /= k   = Nothing
+              | otherwise = Just lv
+          go h k s (Node _ ch) = go h k (s + bitsPerSubkey) (ch `V.unsafeIndex` indexNode h s)
+          go h k _ (Collision colh ch)
+              | colh == h = (\(L _ lv _) -> lv) <$> find (\(L lk _ _) -> lk == k) ch
+              | otherwise = Nothing
+
+-- TODO: No LRU update implemented
 {-# INLINEABLE delete #-}
 delete :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 delete k' m =

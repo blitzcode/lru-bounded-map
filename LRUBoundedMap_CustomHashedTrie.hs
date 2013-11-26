@@ -13,6 +13,7 @@ module LRUBoundedMap_CustomHashedTrie ( Map
                                       , update
                                       , delete
                                       , lookup
+                                      , lookupNoLRU
                                       , popOldest
                                       , popNewest
                                       , valid
@@ -67,6 +68,11 @@ nextTick (Tick64 l h) = if   l == maxBound
                         else Tick64 (l + 1) h
 -}
 
+-- TODO: 64 bit integers are incredibly slow on 32bit GHC, huge speedup
+--       when using Word32 vs Word64. Here's a quick hack using Double's
+--       for the tick, which are available and fast on both architectures
+--       and have 53 bits of mantissa, good enough
+
 newtype Tick64 = Tick64 { tickDouble :: Double }
                  deriving (Eq, Ord)
 
@@ -86,8 +92,7 @@ nextTick :: Tick64 -> Tick64
 nextTick = (+ 1)
 -}
 
-type Tick = Tick64 -- TODO: 64 bit integers are incredibly slow on 32bit GHC, huge speedup
-                   --       when using a Word instead
+type Tick = Tick64
 
 data Map k v = Map { mLimit :: !Int
                    , mTick  :: !Tick -- We use a 'tick', which we keep incrementing, to keep
@@ -155,6 +160,8 @@ update k v m =
         (m', Nothing) -> m'
         _             -> error "LRUBoundedMap.update: insertInternal truncated with updateOnly"
 
+-- TODO: Made a terrible mess out of this function, split into insert / update case,
+--       remove most of the strictness annotations, lots of optimization potential
 {-# INLINE insertInternal #-}
 insertInternal :: (Eq k, Hashable k) => Bool -> k -> v -> Map k v -> (Map k v, Maybe (k, v))
 insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
@@ -223,7 +230,7 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
                               then L k v tick : xs -- Update value
                               else l : traverse xs
                           t' = Collision h $! traverse ch
-                      in (t', minMaxFromTrie t', length ch /= length (traverse ch)) -- TODO: Slow
+                      in (t', minMaxFromTrie t', length ch /= length (traverse ch))
                  else -- Expand collision into interior node
                       go h k v s $ Node maxBound minBound maxBound minBound
                           (if isA colh s then t else Empty)
@@ -283,24 +290,25 @@ toList m = go [] $ mTrie m
 -- Lookup element, also update LRU
 {-# INLINEABLE lookup #-}
 lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
-lookup k' m = ( m { mTick = nextTick tick
+lookup k' m = ( m { mTick = nextTick $ mTick m
                   , mTrie = trie'
                   }
               , mkey
               )
-    where go !_ !_ !_ Empty = (Nothing, Empty)
-          go h k _ t@(Leaf lh (L lk lv lt))
+    where go :: Eq k => Hash -> k -> Tick -> Int -> Trie k v -> (Maybe v, Trie k v)
+          go !_ !_ !_ !_ Empty = (Nothing, Empty)
+          go h k tick _ t@(Leaf lh (L lk lv lt))
               | lh /= h   = (Nothing, t)
               | lk /= k   = (Nothing, t)
               | otherwise = (Just lv, Leaf lh (L lk lv tick))
-          go h k s (Node mina maxa minb maxb a b) =
+          go !h k tick s (Node !mina !maxa !minb !maxb !a !b) =
               -- Traverse into child with matching subkey
-              let !(!ins, !t')      = go h k (s + 1) (if isA h s then a else b)
+              let !(!ins, !t')      = go h k tick (s + 1) (if isA h s then a else b)
                   !(!mint', !maxt') = minMaxFromTrie t'
               in  if   isA h s
                   then (ins, Node mint' maxt' minb  maxb  t' b )
                   else (ins, Node mina  maxa  mint' maxt' a  t')
-          go h k _ t@(Collision colh ch)
+          go h k tick _ t@(Collision colh ch)
               | colh == h = -- Search child list for matching key, rebuild with updated tick
                             foldl' (\(r, Collision _ ch') l@(L lk lv _) ->
                                        if   lk == k
@@ -310,12 +318,11 @@ lookup k' m = ( m { mTick = nextTick tick
                                    (Nothing, Collision colh [])
                                    ch
               | otherwise = (Nothing, t)
-          !tick = mTick m
-          !(!mkey, !trie') = go (hash k') k' 0 $ mTrie m
+          !(!mkey, !trie') = go (hash k') k' (mTick m) 0 $ mTrie m
 
 {-# INLINEABLE lookupNoLRU #-}
-lookupNoLRU :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
-lookupNoLRU k' m = (m, go (hash k') k' 0 $ mTrie m)
+lookupNoLRU :: (Eq k, Hashable k) => k -> Map k v -> Maybe v
+lookupNoLRU k' m = go (hash k') k' 0 $ mTrie m
     where go !_ !_ !_ Empty = Nothing
           go h k _ (Leaf lh (L lk lv lt))
               | lh /= h   = Nothing
