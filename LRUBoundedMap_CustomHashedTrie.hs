@@ -181,30 +181,28 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
                      if   updateOnly
                      then (t, (lt, lt), False)
                      else let t' = Leaf h (L k v tick)
-                              (a', b') | -- Subkey collision, add one level
-                                         subkeyCollision h lh s = (if   isA h s
-                                                                  then flip (,) Empty
-                                                                  else      (,) Empty)
-                                                                      . (\(x, _, True) -> x)
-                                                                      $ go h k v (s + 1) t
-                                       | otherwise              = ( if isA h  s then t' else t
-                                                                  , if isB lh s then t  else t'
-                                                                  )
-                          in ( Node (fst $ minMaxFromTrie a')
-                                    (snd $ minMaxFromTrie a')
-                                    (fst $ minMaxFromTrie b')
-                                    (snd $ minMaxFromTrie b')
-                                    a'
-                                    b'
+                              ((a', mina, maxa), (b', minb, maxb))
+                                  | subkeyCollision h lh s = (
+                                             -- Subkey collision, add one level
+                                             (if   isA h s
+                                              then flip (,) (Empty, maxBound, minBound)
+                                              else      (,) (Empty, maxBound, minBound))
+                                                  . (\(x, (minx, maxx), True) -> (x, minx, maxx))
+                                                  $ go h k v (s + 1) t )
+                                  | otherwise =
+                                           ( if isA h  s then (t', tick, tick) else (t, lt, lt)
+                                           , if isB lh s then (t, lt, lt)      else (t', tick, tick)
+                                           )
+                          in ( Node mina maxa minb maxb a' b'
                              , (mint, maxt)
                              , True
                              )
-        go !h !k !v !s !t@(Node _ _ _ _ a b) =
+        go !h !k !v !s !t@(Node mina maxa minb maxb a b) =
             let !((tA, (mintA, maxtA), insA), (tB, (mintB, maxtB), insB)) =
                     -- Traverse into child with matching subkey
                     if   isA h s
-                    then (go h k v (s + 1) a, (b, minMaxFromTrie b, False))
-                    else ((a, minMaxFromTrie a, False), go h k v (s + 1) b)
+                    then (go h k v (s + 1) a, (b, (minb, maxb), False))
+                    else ((a, (mina, maxa), False), go h k v (s + 1) b)
                 mint = min mintA mintB
                 maxt = max maxtA maxtB
             in  ( Node mintA maxtA mintB maxtB tA tB
@@ -231,9 +229,11 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
                           t' = Collision h $! traverse ch
                       in (t', minMaxFromTrie t', length ch /= length (traverse ch))
                  else -- Expand collision into interior node
-                      go h k v s $ Node maxBound minBound maxBound minBound
-                          (if isA colh s then t else Empty)
-                          (if isB colh s then t else Empty)
+                      let (mint, maxt) = minMaxFromTrie t
+                      in  go h k v s $
+                              if   isA colh s 
+                              then Node mint     maxt     maxBound minBound t     Empty
+                              else Node maxBound minBound mint     maxt     Empty t    
         !(trie', _, didInsert) = go (hash kIns) kIns vIns 0 $ mTrie m
         !tick = mTick m
         !inserted = m { mTrie = trie'
@@ -261,10 +261,10 @@ size m = (mSize m, mLimit m)
 -- O(n) size-by-traversal
 sizeTraverse :: Map k v -> Int
 sizeTraverse m = go $ mTrie m
-    where go Empty            = 0
-          go (Leaf _ _)       = 1
+    where go Empty              = 0
+          go (Leaf _ _)         = 1
           go (Node _ _ _ _ a b) = go a + go b
-          go (Collision _ ch) = length ch
+          go (Collision _ ch)   = length ch
 
 {-# INLINEABLE null #-}
 null :: Map k v -> Bool
@@ -283,8 +283,8 @@ toList :: Map k v -> [(k, v)]
 toList m = go [] $ mTrie m
     where go l Empty              = l
           go l (Leaf _ (L k v _)) = (k, v) : l
-          go l (Node _ _ _ _ a b)     = go (go l a) b
-          go l (Collision _ ch)   = foldl' (\l' (L k v _) -> (k, v) : l') l ch
+          go l (Node _ _ _ _ a b) = go (go l a) b
+          go l (Collision _ ch)   = foldr (\(L k v _) l' -> (k, v) : l') l ch
 
 -- Lookup element, also update LRU
 {-# INLINEABLE lookup #-}
@@ -390,11 +390,9 @@ popInternal popOld m =
         Nothing -> (m, Nothing)
     where go Empty               = Nothing
           go (Leaf _ (L lk _ _)) = Just lk
-          go (Node _ _ _ _ a b)      = go $ if   popOld
-                                        then if minA < minB then a else b
-                                        else if maxA > maxB then a else b
-                                        where (minA, maxA) = minMaxFromTrie a
-                                              (minB, maxB) = minMaxFromTrie b
+          go (Node mina maxa minb maxb a b) = go $ if   popOld
+                                        then if mina < minb then a else b
+                                        else if maxa > maxb then a else b
           go (Collision _ ch)    = Just . (\(L lk _ _) -> lk)
                                         . ( if   popOld
                                             then minimumBy
