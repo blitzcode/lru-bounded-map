@@ -135,6 +135,14 @@ instance (NFData k, NFData v) => NFData (Trie k v) where
     rnf (Node _ _ _ _ a b) = rnf a `seq` rnf b
     rnf (Collision _ ch)   = rnf ch
 
+empty :: Int -> Map k v
+empty limit | limit >= 1 = Map { mLimit = limit
+                               , mTick  = minBound
+                               , mSize  = 0
+                               , mTrie  = Empty
+                               }
+            | otherwise  = error "limit for LRUBoundedMap needs to be >= 1"
+
 {-# INLINE isA #-}
 {-# INLINE isB #-}
 isA, isB :: Hash -> Int -> Bool
@@ -244,15 +252,7 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
         -- Overflow?
         if   mSize inserted > mLimit inserted
         then popOldest inserted
-        else (inserted , Nothing)
-
-empty :: Int -> Map k v
-empty limit | limit >= 1 = Map { mLimit = limit
-                               , mTick  = minBound
-                               , mSize  = 0
-                               , mTrie  = Empty
-                               }
-            | otherwise  = error "limit for LRUBoundedMap needs to be >= 1"
+        else (inserted, Nothing)
 
 {-# INLINEABLE size #-}
 size :: Map k v -> (Int, Int)
@@ -296,7 +296,7 @@ lookup k' m = ( m { mTick = nextTick $ mTick m
               )
     where go :: Eq k => Hash -> k -> Tick -> Int -> Trie k v -> (Maybe v, Trie k v)
           go !_ !_ _ !_ Empty = (Nothing, Empty)
-          go h k tick _ t@(Leaf lh (L lk lv lt))
+          go h k tick _ t@(Leaf lh (L lk lv _))
               | lh /= h   = (Nothing, t)
               | lk /= k   = (Nothing, t)
               | otherwise = (Just lv, Leaf lh (L lk lv tick))
@@ -434,9 +434,9 @@ valid m =
                                  tell "Subkey shift too large during traversal\n"
                              when (mint < minParent || maxt > maxParent) $
                                  tell "Node min/max tick outside of parent interval\n"
-                             let used = foldl' (\u x@(t', _, _) ->
-                                                   case t' of Empty -> u; _ -> x : u
-                                               )
+                             let used = foldr (\x@(t', _, _) u ->
+                                                  case t' of Empty -> u; _ -> x : u
+                                              )
                                         []
                                         $ (a, minA, maxA) : (b, minB, maxB) : []
                              when (length used == 0) $

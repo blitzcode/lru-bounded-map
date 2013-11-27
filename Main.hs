@@ -219,19 +219,19 @@ main = do
           -- it likely will in a real-word situation
         , bgroup "lookup (w/ LRU upd, ord keys) "
           [
-            lkBench "LBM_LinkedListHM (lim 5k)" (LBM_LLHM.lookup)  lLBM_LLHM5k keysL
-          , lkBench "LBM_LinkedListHM (lim 1k)" (LBM_LLHM.lookup)  lLBM_LLHM1k keysL
+            lkBench "LBM_LinkedListHM (lim 5k)"      (LBM_LLHM.lookup)  lLBM_LLHM5k  keysL
+          , lkBench "LBM_LinkedListHM (lim 1k)"      (LBM_LLHM.lookup)  lLBM_LLHM1k  keysL
           ]
         , bgroup "lookup (w/ LRU upd) "
           [
-            lkBench "LBM_LinkedListHM (lim 5k)"      (LBM_LLHM.lookup)  lLBM_LLHM5k keysLShuffled
-          , lkBench "LBM_LinkedListHM (lim 1k)"      (LBM_LLHM.lookup)  lLBM_LLHM1k keysLShuffled
-          , lkBench "LBM_DoubleMapBTree (lim 5k)"    (LBM_DMBT.lookup)  lLBM_DMBT5k keysLShuffled
-          , lkBench "LBM_DoubleMapBTree (lim 1k)"    (LBM_DMBT.lookup)  lLBM_DMBT1k keysLShuffled
+            lkBench "LBM_LinkedListHM (lim 5k)"      (LBM_LLHM.lookup)  lLBM_LLHM5k  keysLShuffled
+          , lkBench "LBM_LinkedListHM (lim 1k)"      (LBM_LLHM.lookup)  lLBM_LLHM1k  keysLShuffled
+          , lkBench "LBM_DoubleMapBTree (lim 5k)"    (LBM_DMBT.lookup)  lLBM_DMBT5k  keysLShuffled
+          , lkBench "LBM_DoubleMapBTree (lim 1k)"    (LBM_DMBT.lookup)  lLBM_DMBT1k  keysLShuffled
         --, lkBench "LBM_CustomHAMT (lim 5k)"        (LBM_CHAMT.lookup) lLBM_CHAMT5k keysLShuffled
         --, lkBench "LBM_CustomHAMT (lim 1k)"        (LBM_CHAMT.lookup) lLBM_CHAMT1k keysLShuffled
-          , lkBench "LBM_CustomHashedTrie (lim 5k)"  (LBM_CHT.lookup)   lLBM_CHT5k  keysLShuffled
-          , lkBench "LBM_CustomHashedTrie (lim 1k)"  (LBM_CHT.lookup)   lLBM_CHT1k  keysLShuffled
+          , lkBench "LBM_CustomHashedTrie (lim 5k)"  (LBM_CHT.lookup)   lLBM_CHT5k   keysLShuffled
+          , lkBench "LBM_CustomHashedTrie (lim 1k)"  (LBM_CHT.lookup)   lLBM_CHT1k   keysLShuffled
           ]
         ]
     where {-# INLINE lkBench #-}
