@@ -27,6 +27,7 @@ import Data.Maybe
 import Data.Word
 import Data.Int
 import Data.List hiding (lookup, delete, null, insert)
+import qualified Data.Map.Strict as M
 import qualified Data.List (null)
 import Control.Applicative hiding (empty)
 import Control.Monad
@@ -153,6 +154,24 @@ isB h s = not $ isA h s
 {-# INLINE subkeyCollision #-}
 subkeyCollision :: Hash -> Hash -> Int -> Bool
 subkeyCollision a b s = (a `xor` b) .&. (1 `shiftL` s) == 0
+
+{-
+compactTicks :: Map k v -> Map k v
+compactTicks m =
+    let tickList = go (mTrie m) []
+            where go (Empty              ) l = l
+                  go (Leaf _ (L _ _ tick)) l = tick : l
+                  go (Node _ _ _ _ a b   ) l = go a (go b l)
+                  go (Collision _ ch     ) l = foldr (\(L _ _ tick) l' -> tick : l') l ch
+        tickMap = 
+    in  m
+-}
+
+compactTicks :: (Eq k, Hashable k) => Map k v -> Map k v
+compactTicks m = go m . empty $ mLimit m
+    where go msrc mdst = let (msrc', mkv) = popOldest msrc
+                         in  case mkv of Just (k, v) -> go msrc' . fst $ insert k v mdst
+                                         Nothing     -> mdst
 
 -- Insert a new element into the map, return the new map and the truncated
 -- element (if over the limit)
