@@ -116,8 +116,11 @@ instance (NFData k, NFData v) => NFData (Leaf k v) where
     rnf (L k v _) = rnf k `seq` rnf v
 
 data Trie k v = Empty
-                -- Oldest A / Newest A / Oldest B / Newest B / A / B
-              | Node !Tick !Tick !Tick !Tick !(Trie k v) !(Trie k v)
+                -- Storing the tick interval for both branches instead of an aggregate
+                -- makes for slightly faster code at the expense of some storage
+                --
+                --   Oldest A   Newest A   Oldest B  Newest B    A           B
+              | Node !Tick      !Tick      !Tick     !Tick       !(Trie k v) !(Trie k v)
               | Leaf !Hash !(Leaf k v)
               | Collision !Hash ![Leaf k v]
 
@@ -191,12 +194,24 @@ update k v m =
 {-# INLINE insertInternal #-}
 insertInternal :: (Eq k, Hashable k) => Bool -> k -> v -> Map k v -> (Map k v, Maybe (k, v))
 insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
-    let go !h !k !v !_ Empty = if   updateOnly
+    let go h k v s t@(Node mina maxa minb maxb a b) =
+            let !(!(!tA, !(!mintA, !maxtA), !insA), !(!tB, !(!mintB, !maxtB), !insB)) =
+                    -- Traverse into child with matching subkey
+                    if   isA h s
+                    then (go h k v (s + 1) a, (b, (minb, maxb), False))
+                    else ((a, (mina, maxa), False), go h k v (s + 1) b)
+                !mint = min mintA mintB
+                !maxt = max maxtA maxtB
+            in  ( Node mintA maxtA mintB maxtB tA tB
+                , (mint, maxt)
+                , insA || insB
+                )
+        go !h !k !v !_ Empty = if   updateOnly
                                then (Empty, (maxBound, minBound), False) -- Update mode, no insert
                                else (Leaf h $ L k v tick, (tick, tick), True)
-        go !h !k !v !s !t@(Leaf !lh !li@(L !lk !lv !lt)) =
-            let mint = min tick lt
-                maxt = max tick lt
+        go h k v s t@(Leaf lh li@(L lk lv lt)) =
+            let !mint = min tick lt
+                !maxt = max tick lt
             in  if   h == lh
                 then if   k == lk
                      then (Leaf h $ L k v tick, (tick, tick), False) -- Update value
@@ -208,7 +223,7 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
                      if   updateOnly
                      then (t, (lt, lt), False)
                      else let t' = Leaf h (L k v tick)
-                              ((a', mina, maxa), (b', minb, maxb))
+                              !(!(!a', !mina, !maxa), !(!b', !minb, !maxb))
                                   | subkeyCollision h lh s = (
                                              -- Subkey collision, add one level
                                              (if   isA h s
@@ -224,18 +239,7 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
                              , (mint, maxt)
                              , True
                              )
-        go !h !k !v !s !t@(Node mina maxa minb maxb a b) =
-            let !((tA, (mintA, maxtA), insA), (tB, (mintB, maxtB), insB)) =
-                    -- Traverse into child with matching subkey
-                    if   isA h s
-                    then (go h k v (s + 1) a, (b, (minb, maxb), False))
-                    else ((a, (mina, maxa), False), go h k v (s + 1) b)
-                mint = min mintA mintB
-                maxt = max maxtA maxtB
-            in  ( Node mintA maxtA mintB maxtB tA tB
-                , (mint, maxt)
-                , insA || insB
-                )
+
         go !h !k !v !s !t@(Collision colh ch) =
             if   updateOnly
             then if   h == colh
@@ -314,11 +318,6 @@ lookup k' m = ( m { mTick = nextTick $ mTick m
               , mvalue
               )
     where go :: Eq k => Hash -> k -> Tick -> Int -> Trie k v -> (Maybe v, Trie k v)
-          go !_ !_ _ !_ Empty = (Nothing, Empty)
-          go h k tick _ t@(Leaf lh (L lk lv _))
-              | lh /= h   = (Nothing, t)
-              | lk /= k   = (Nothing, t)
-              | otherwise = (Just lv, Leaf lh (L lk lv tick))
           go h k tick s t@(Node mina maxa minb maxb a b) =
               -- Traverse into child with matching subkey
               let !(!ins, !t') = go h k tick (s + 1) (if isA h s then a else b)
@@ -328,6 +327,11 @@ lookup k' m = ( m { mTick = nextTick $ mTick m
                        in  if   isA h s
                            then (ins, Node mint' maxt' minb  maxb  t' b )
                            else (ins, Node mina  maxa  mint' maxt' a  t')
+          go !_ !_ _ !_ Empty = (Nothing, Empty)
+          go h k tick _ t@(Leaf lh (L lk lv _))
+              | lh /= h   = (Nothing, t)
+              | lk /= k   = (Nothing, t)
+              | otherwise = (Just lv, Leaf lh (L lk lv tick))
           go h k tick _ t@(Collision colh ch)
               | colh == h = -- Search child list for matching key, rebuild with updated tick
                             foldl' (\(r, Collision _ ch') l@(L lk lv _) ->
@@ -343,12 +347,12 @@ lookup k' m = ( m { mTick = nextTick $ mTick m
 {-# INLINEABLE lookupNoLRU #-}
 lookupNoLRU :: (Eq k, Hashable k) => k -> Map k v -> Maybe v
 lookupNoLRU k' m = go (hash k') k' 0 $ mTrie m
-    where go !_ !_ !_ Empty = Nothing
+    where go h k s (Node _ _ _ _ a b) = go h k (s + 1) (if isA h s then a else b)
+          go !_ !_ !_ Empty = Nothing
           go h k _ (Leaf lh (L lk lv lt))
               | lh /= h   = Nothing
               | lk /= k   = Nothing
               | otherwise = Just lv
-          go h k s (Node _ _ _ _ a b) = go h k (s + 1) (if isA h s then a else b)
           go h k _ (Collision colh ch)
               | colh == h = (\(L _ lv _) -> lv) <$> find (\(L lk _ _) -> lk == k) ch
               | otherwise = Nothing
@@ -356,27 +360,29 @@ lookupNoLRU k' m = go (hash k') k' 0 $ mTrie m
 {-# INLINEABLE delete #-}
 delete :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 delete k' m =
-    let go !_ !_ !_ Empty = (Empty, Nothing)
+    let go h k s t@(Node _ _ _ _ a b) =
+            let !(ch, del') = if   isA h s
+                              then (\(t', dchild) -> ((t', b ), dchild)) $ go h k (s + 1) a
+                              else (\(t', dchild) -> ((a , t'), dchild)) $ go h k (s + 1) b
+            in  if isNothing del' then (t, Nothing) else
+                 ( case ch of
+                       -- We removed the last element, delete node
+                       (Empty, Empty)                        -> Empty
+                       -- If our last child is a leaf / collision replace the node by it
+                       (Empty, t'   ) | isLeafOrCollision t' -> t'
+                       (t'   , Empty) | isLeafOrCollision t' -> t'
+                       -- Update node with new subtree
+                       -- TODO: Don't recompute min/max for static branch
+                       (a', b')                              -> let (minA, maxA) = minMaxFromTrie a'
+                                                                    (minB, maxB) = minMaxFromTrie b'
+                                                                in  Node minA maxA minB maxB a' b'
+                 , del'
+                 )
+        go !_ !_ !_ Empty = (Empty, Nothing)
         go h k _ t@(Leaf lh (L lk lv lt))
             | lh /= h   = (t, Nothing)
             | lk /= k   = (t, Nothing)
             | otherwise = (Empty, Just lv)
-        go h k s t@(Node _ _ _ _ a b) =
-            let !(ch, del') = if   isA h s
-                              then (\(t', dchild) -> ((t', b ), dchild)) $ go h k (s + 1) a
-                              else (\(t', dchild) -> ((a , t'), dchild)) $ go h k (s + 1) b
-            in  ( case ch of
-                      -- We removed the last element, delete node
-                      (Empty, Empty)                        -> Empty
-                      -- If our last child is a leaf / collision replace the node by it
-                      (Empty, t'   ) | isLeafOrCollision t' -> t'
-                      (t'   , Empty) | isLeafOrCollision t' -> t'
-                      -- Update node with new subtree
-                      (a', b')                              -> let (minA, maxA) = minMaxFromTrie a'
-                                                                   (minB, maxB) = minMaxFromTrie b'
-                                                               in  Node minA maxA minB maxB a' b'
-                , del'
-                )
         go h k _ t@(Collision colh ch)
             | colh == h = let (delch', ch') = partition (\(L lk _ _) -> lk == k) ch
                           in  if   length ch' == 1
@@ -410,8 +416,8 @@ popInternal popOld m =
     where go Empty               = Nothing
           go (Leaf _ (L lk _ _)) = Just lk
           go (Node mina maxa minb maxb a b) = go $ if   popOld
-                                        then if mina < minb then a else b
-                                        else if maxa > maxb then a else b
+                                                   then if mina < minb then a else b
+                                                   else if maxa > maxb then a else b
           go (Collision _ ch)    = Just . (\(L lk _ _) -> lk)
                                         . ( if   popOld
                                             then minimumBy
