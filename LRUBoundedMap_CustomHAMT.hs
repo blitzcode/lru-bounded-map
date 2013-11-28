@@ -40,8 +40,10 @@ import Control.DeepSeq (NFData(rnf))
 -- subtrees are stored so the data structure can have an upper bound on the number of elements
 -- and remove the least recently used one overflow. The other bound allows to retrieve the item
 -- which was inserted / touched last
-
--- TODO: LRU / bounded aspect not working yet, about 25% done
+--
+-- TODO: LRU / bounded aspect not working yet
+--
+-- TODO: There are lots of things to be optimized
 
 data Map k v = Map { mLimit :: !Int
                    , mTick  :: !Word64 -- We use a 'tick', which we keep incrementing, to keep

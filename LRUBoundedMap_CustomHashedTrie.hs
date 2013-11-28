@@ -290,7 +290,7 @@ lookup k' m = if   isNothing mvalue -- Only increment tick if we found something
     where go :: Eq k => Hash -> k -> Tick -> Int -> Trie k v -> (Maybe v, Trie k v)
           go h k tick s t@(Node mina maxa minb maxb a b) =
               -- Traverse into child with matching subkey
-              let !(!ins, !t') = go h k tick (s + 1) (if isA h s then a else b)
+              let !(!ins, t') = go h k tick (s + 1) (if isA h s then a else b)
               in  if   isNothing ins -- Don't rebuild node if we don't need to update the LRU
                   then (Nothing, t)
                   else let !(!mint', !maxt') = minMaxFromTrie t'
