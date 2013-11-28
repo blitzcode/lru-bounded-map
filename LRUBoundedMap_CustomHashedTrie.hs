@@ -99,13 +99,13 @@ empty limit | limit >= 1 = Map { mLimit = limit
 {-# INLINE isA #-}
 {-# INLINE isB #-}
 isA, isB :: Hash -> Int -> Bool
-isA h s = h .&. (1 `shiftL` s) == 0
+isA h s = h .&. (1 `unsafeShiftL` s) == 0
 isB h s = not $ isA h s
 
 -- Are two hashes colliding at the given depth?
 {-# INLINE subkeyCollision #-}
 subkeyCollision :: Hash -> Hash -> Int -> Bool
-subkeyCollision a b s = (a `xor` b) .&. (1 `shiftL` s) == 0
+subkeyCollision a b s = (a `xor` b) .&. (1 `unsafeShiftL` s) == 0
 
 -- As we keep incrementing the global tick, we eventually run into the situation where it
 -- overflows (2^32). We could switch to a 64 bit tick, but GHC's emulation for 64 bit
@@ -284,7 +284,7 @@ toList m = go [] $ mTrie m
 lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 lookup k' m = if   isNothing mvalue -- Only increment tick if we found something
               then (m, Nothing)
-              else (compactIfAtTickLimit $ m { mTick = mTick m + 1 , mTrie = trie' }, mvalue)
+              else (compactIfAtTickLimit $ m { mTick = mTick m + 1, mTrie = trie' }, mvalue)
                    -- TODO: Oddly enough, the tick limit check causes a ~10% slowdown in
                    --       the 'lookup (w/ LRU upd) /LBM_CustomHashedTrie (lim 1k)' benchmark
     where go :: Eq k => Hash -> k -> Tick -> Int -> Trie k v -> (Maybe v, Trie k v)
@@ -319,7 +319,7 @@ lookupNoLRU :: (Eq k, Hashable k) => k -> Map k v -> Maybe v
 lookupNoLRU k' m = go (hash k') k' 0 $ mTrie m
     where go h k s (Node _ _ _ _ a b) = go h k (s + 1) (if isA h s then a else b)
           go !_ !_ !_ Empty = Nothing
-          go h k _ (Leaf lh (L lk lv lt))
+          go h k _ (Leaf lh (L lk lv _))
               | lh /= h   = Nothing
               | lk /= k   = Nothing
               | otherwise = Just lv
@@ -332,24 +332,26 @@ delete :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 delete k' m =
     let go h k s t@(Node _ _ _ _ a b) =
             let !(ch, del') = if   isA h s
-                              then (\(t', dchild) -> ((t', b ), dchild)) $ go h k (s + 1) a
-                              else (\(t', dchild) -> ((a , t'), dchild)) $ go h k (s + 1) b
-            in  if isNothing del' then (t, Nothing) else
-                 ( case ch of
-                       -- We removed the last element, delete node
-                       (Empty, Empty)                        -> Empty
-                       -- If our last child is a leaf / collision replace the node by it
-                       (Empty, t'   ) | isLeafOrCollision t' -> t'
-                       (t'   , Empty) | isLeafOrCollision t' -> t'
-                       -- Update node with new subtree
-                       -- TODO: Don't recompute min/max for static branch
-                       (a', b')                              -> let (minA, maxA) = minMaxFromTrie a'
-                                                                    (minB, maxB) = minMaxFromTrie b'
-                                                                in  Node minA maxA minB maxB a' b'
-                 , del'
-                 )
+                              then (\(!t', !dchild) -> ((t', b ), dchild)) $ go h k (s + 1) a
+                              else (\(!t', !dchild) -> ((a , t'), dchild)) $ go h k (s + 1) b
+            in  if   isNothing del'
+                then (t, Nothing)
+                else ( case ch of
+                           -- We removed the last element, delete node
+                           (Empty, Empty)                        -> Empty
+                           -- If our last child is a leaf / collision replace the node by it
+                           (Empty, t'   ) | isLeafOrCollision t' -> t'
+                           (t'   , Empty) | isLeafOrCollision t' -> t'
+                           -- Update node with new subtree
+                           !(!a', !b')                           ->
+                               -- TODO: Don't recompute min/max for static branch
+                               let (minA, maxA) = minMaxFromTrie a'
+                                   (minB, maxB) = minMaxFromTrie b'
+                               in  Node minA maxA minB maxB a' b'
+                     , del'
+                     )
         go !_ !_ !_ Empty = (Empty, Nothing)
-        go h k _ t@(Leaf lh (L lk lv lt))
+        go h k _ t@(Leaf lh (L lk lv _))
             | lh /= h   = (t, Nothing)
             | lk /= k   = (t, Nothing)
             | otherwise = (Empty, Just lv)
@@ -357,18 +359,20 @@ delete k' m =
             | colh == h = let (delch', ch') = partition (\(L lk _ _) -> lk == k) ch
                           in  if   length ch' == 1
                               then  -- Deleted last remaining collision, it's a leaf node now
-                                   (Leaf h $ head ch', Just $ (\((L _ lv _):[]) -> lv) delch')
+                                   (Leaf h $ head ch', Just $ (\((L _ lv _) : []) -> lv) delch')
                               else (Collision h ch', (\(L _ lv _) -> lv) <$> listToMaybe delch')
             | otherwise = (t, Nothing)
         !(m', del) = go (hash k') k' 0 $ mTrie m
         isLeafOrCollision (Leaf _ _)      = True
         isLeafOrCollision (Collision _ _) = True
         isLeafOrCollision _               = False
-    in  ( m { mTrie = m'
-            , mSize = mSize m - if isJust del then 1 else 0
-            }
-        , del
-        )
+    in  if   isNothing del
+        then (m, Nothing)
+        else ( m { mTrie = m'
+                 , mSize = mSize m - 1
+                 }
+             , del
+             )
 
 popNewest, popOldest :: (Eq k, Hashable k) => Map k v -> (Map k v, Maybe (k, v))
 popNewest = popInternal False
@@ -381,7 +385,7 @@ popOldest = popInternal True
 popInternal :: (Eq k, Hashable k) => Bool -> Map k v -> (Map k v, Maybe (k, v))
 popInternal popOld m =
     case go $ mTrie m of
-        Just k  -> let (m', Just v) = delete k m in (m', Just (k, v))
+        Just k  -> let !(!m', !(Just v)) = delete k m in (m', Just (k, v))
         Nothing -> (m, Nothing)
     where go Empty               = Nothing
           go (Leaf _ (L lk _ _)) = Just lk
