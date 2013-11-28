@@ -30,7 +30,7 @@ import FisherYatesShuffle
 criterionCfg :: Config
 criterionCfg = defaultConfig { cfgPerformGC = ljust True
                              , cfgReport    = ljust "./report.html"
-                             , cfgSamples   = ljust 5
+                             , cfgSamples   = ljust 10
                              }
 
 main :: IO ()
@@ -80,46 +80,46 @@ main = do
         lLBM_CHT5k    = mkLBM_CHT5k   kvL
         lLBM_CHT1k    = mkLBM_CHT1k   kvL
     -- Some basic tests for the LRU CT map
-    case LBM_CHT.valid $ mkLBM_CHT5k kvL of
-        Just err -> (putStrLn $ "mkLBM_CHT5k.valid: " ++ err) >> exitFailure
+    case LBM_CHT.valid lLBM_CHT5k of
+        Just err -> (putStrLn $ "lLBM_CHT5k.valid: " ++ err) >> exitFailure
         Nothing  -> return ()
-    case LBM_CHT.valid $ mkLBM_CHT1k kvL of
-        Just err -> (putStrLn $ "mkLBM_CHT1k.valid: " ++ err) >> exitFailure
+    case LBM_CHT.valid lLBM_CHT1k of
+        Just err -> (putStrLn $ "lLBM_CHT1k.valid: " ++ err) >> exitFailure
         Nothing  -> return ()
-    forM_ (LBM_LLHM.view $ mkLBM_LLHM5k kvL) $ \(k, v) ->
-        case LBM_CHT.lookup k (mkLBM_CHT5k kvL) of
+    forM_ (LBM_LLHM.view lLBM_LLHM5k) $ \(k, v) ->
+        case LBM_CHT.lookup k lLBM_CHT5k of
           (_, Just v') -> when (v /= v') $ do
-                              putStrLn $ "mkLBM_CHT5k invalid value for key: " ++ B8.unpack k
+                              putStrLn $ "lLBM_CHT5k invalid value for key: " ++ B8.unpack k
                               exitFailure
-          (_, Nothing) -> (putStrLn $ "mkLBM_CHT5k missing key: " ++ B8.unpack k) >> exitFailure
-    when (LBM_LLHM.size (mkLBM_LLHM5k kvL) /= LBM_CHT.size (mkLBM_CHT5k kvL)) $
-        (putStrLn "mkLBM_CHT5k size mismatch") >> exitFailure
-    forM_ (LBM_LLHM.view $ mkLBM_LLHM1k kvL) $ \(k, v) ->
-        case LBM_CHT.lookup k (mkLBM_CHT1k kvL) of
+          (_, Nothing) -> (putStrLn $ "lLBM_CHT5k missing key: " ++ B8.unpack k) >> exitFailure
+    when (LBM_LLHM.size lLBM_LLHM5k /= LBM_CHT.size lLBM_CHT5k) $
+        (putStrLn "lLBM_CHT5k size mismatch") >> exitFailure
+    forM_ (LBM_LLHM.view lLBM_LLHM1k) $ \(k, v) ->
+        case LBM_CHT.lookup k lLBM_CHT1k of
           (_, Just v') -> when (v /= v') $ do
-                              putStrLn $ "mkLBM_CHT1k invalid value for key: " ++ B8.unpack k
+                              putStrLn $ "lLBM_CHT1k invalid value for key: " ++ B8.unpack k
                               exitFailure
-          (_, Nothing) -> (putStrLn $ "mkLBM_CHT1k missing key: " ++ B8.unpack k) >> exitFailure
-    when (LBM_LLHM.size (mkLBM_LLHM1k kvL) /= LBM_CHT.size (mkLBM_CHT1k kvL)) $
-        (putStrLn "mkLBM_CHT1k size mismatch") >> exitFailure
-    let allDeleted = foldl' (\r k -> fst $ LBM_CHT.delete k r) (mkLBM_CHT5k kvL) keysLShuffled
+          (_, Nothing) -> (putStrLn $ "lLBM_CHT1k missing key: " ++ B8.unpack k) >> exitFailure
+    when (LBM_LLHM.size lLBM_LLHM1k /= LBM_CHT.size lLBM_CHT1k) $
+        (putStrLn "lLBM_CHT1k size mismatch") >> exitFailure
+    let allDeleted = foldl' (\r k -> fst $ LBM_CHT.delete k r) lLBM_CHT5k keysLShuffled
      in do when ((fst $ LBM_CHT.size allDeleted) /= 0) $
-              (putStrLn "mkLBM_CHT5k delete failed") >> exitFailure
+              (putStrLn "lLBM_CHT5k delete failed") >> exitFailure
            case LBM_CHT.valid allDeleted of
-               Just err -> (putStrLn $ "delete: mkLBM_CHT5k.valid: " ++ err) >> exitFailure
+               Just err -> (putStrLn $ "delete: lLBM_CHT5k.valid: " ++ err) >> exitFailure
                Nothing  -> return ()
     let lookups    = take 200 keysLShuffled
         insertions = [(B8.pack $ show i, i) | i <- [1..50]]
         reference  = sort . LBM_LLHM.view $
                        foldl' (\r (k, v) -> fst $ LBM_LLHM.insert k v r)
                               ( foldl' (\r k -> fst $ LBM_LLHM.lookup k r)
-                                       (mkLBM_LLHM1k kvL)
+                                       lLBM_LLHM1k
                                        lookups
                               )
                               insertions
         testMap    = foldl' (\r (k, v) -> fst $ LBM_CHT.insert k v r)
                             ( foldl' (\r k -> fst $ LBM_CHT.lookup k r)
-                                     (mkLBM_CHT1k kvL)
+                                     lLBM_CHT1k
                                      lookups
                             )
                             insertions
@@ -129,7 +129,7 @@ main = do
                               exitFailure
                Nothing  -> return ()
            when (test /= reference) $ do
-              putStrLn "mkLBM_CHT1k lookup / insert / delete comparison failed"
+              putStrLn "lLBM_CHT1k lookup / insert / delete comparison failed"
               print $ reference \\ test
               exitFailure
     -- Make sure we build the initial maps
