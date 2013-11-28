@@ -16,6 +16,7 @@ module LRUBoundedMap_CustomHashedTrie ( Map
                                       , lookupNoLRU
                                       , popOldest
                                       , popNewest
+                                      , compactTicks
                                       , valid
                                       ) where
 
@@ -25,9 +26,7 @@ import Data.Hashable (Hashable)
 import Data.Bits
 import Data.Maybe
 import Data.Word
-import Data.Int
 import Data.List hiding (lookup, delete, null, insert)
-import qualified Data.Map.Strict as M
 import qualified Data.List (null)
 import Control.Applicative hiding (empty)
 import Control.Monad
@@ -38,61 +37,10 @@ import Control.DeepSeq (NFData(rnf))
 -- the bits of key hashes. Additional least / most recently used bounds for subtrees are
 -- stored so the data structure can have an upper bound on the number of elements and
 -- remove the least recently used one overflow. The other bound allows to retrieve the
--- item which was inserted / touched last
+-- item which was inserted / touched last. Unlike a Data.HashMap our size operation is
+-- O(1), we also need to rebuild the map every 2^32 changes (see compactTicks)
 
-{-
-data Tick64 = Tick64 !Word !Word
-              deriving Eq
-
-instance Ord Tick64 where
-    compare (Tick64 la ha) (Tick64 lb hb) = if   ha == hb
-                                            then compare la lb
-                                            else compare ha hb
-    max a@(Tick64 la ha) b@(Tick64 lb hb) = if   ha == hb
-                                            then if la <= lb then b else a
-                                            else if ha <= hb then b else a
-    min a@(Tick64 la ha) b@(Tick64 lb hb) = if   ha == hb
-                                            then if la <= lb then a else b
-                                            else if ha <= hb then a else b
-
-instance Bounded Tick64 where
-    maxBound = Tick64 maxBound maxBound
-    minBound = Tick64 minBound minBound
-
-instance NFData Tick64 where
-    rnf (Tick64 l h) = rnf l `seq` rnf h
-
-nextTick :: Tick64 -> Tick64
-nextTick (Tick64 l h) = if   l == maxBound
-                        then Tick64 0 (h + 1)
-                        else Tick64 (l + 1) h
--}
-
--- TODO: 64 bit integers are incredibly slow on 32bit GHC, huge speedup
---       when using Word32 vs Word64. Here's a quick hack using Double's
---       for the tick, which are available and fast on both architectures
---       and have 53 bits of mantissa, good enough
-
-newtype Tick64 = Tick64 { tickDouble :: Double }
-                 deriving (Eq, Ord)
-
-nextTick :: Tick64 -> Tick64
-nextTick (Tick64 t) = Tick64 (t + 1)
-
-instance NFData Tick64 where
-    rnf _ = ()
-
-instance Bounded Tick64 where
-    maxBound = Tick64 9007199254740992
-    minBound = Tick64 0
-
-{-
-type Tick64 = Int
-nextTick :: Tick64 -> Tick64
-nextTick = (+ 1)
--}
-
-type Tick = Tick64
+type Tick = Word32
 
 data Map k v = Map { mLimit :: !Int
                    , mTick  :: !Tick -- We use a 'tick', which we keep incrementing, to keep
@@ -126,12 +74,12 @@ data Trie k v = Empty
 
 {-# INLINE minMaxFromTrie #-}
 minMaxFromTrie :: Trie k v -> (Tick, Tick)
-minMaxFromTrie Empty                      = (maxBound, minBound)
+minMaxFromTrie Empty                          = (maxBound, minBound)
 minMaxFromTrie (Node olda newa oldb newb _ _) = (min olda oldb, max newa newb)
-minMaxFromTrie (Leaf _ (L _ _ tick))      = (tick, tick)
-minMaxFromTrie (Collision _ ch)           = ( (minimum . map (\(L _ _ tick) -> tick) $ ch)
-                                            , (maximum . map (\(L _ _ tick) -> tick) $ ch)
-                                            )
+minMaxFromTrie (Leaf _ (L _ _ tick))          = (tick, tick)
+minMaxFromTrie (Collision _ ch)               = ( (minimum . map (\(L _ _ tick) -> tick) $ ch)
+                                                , (maximum . map (\(L _ _ tick) -> tick) $ ch)
+                                                )
 
 instance (NFData k, NFData v) => NFData (Trie k v) where
     rnf Empty              = ()
@@ -139,6 +87,7 @@ instance (NFData k, NFData v) => NFData (Trie k v) where
     rnf (Node _ _ _ _ a b) = rnf a `seq` rnf b
     rnf (Collision _ ch)   = rnf ch
 
+-- TODO: Check if limit exceeds maxBound of tick
 empty :: Int -> Map k v
 empty limit | limit >= 1 = Map { mLimit = limit
                                , mTick  = minBound
@@ -158,23 +107,48 @@ isB h s = not $ isA h s
 subkeyCollision :: Hash -> Hash -> Int -> Bool
 subkeyCollision a b s = (a `xor` b) .&. (1 `shiftL` s) == 0
 
-{-
-compactTicks :: Map k v -> Map k v
-compactTicks m =
-    let tickList = go (mTrie m) []
-            where go (Empty              ) l = l
-                  go (Leaf _ (L _ _ tick)) l = tick : l
-                  go (Node _ _ _ _ a b   ) l = go a (go b l)
-                  go (Collision _ ch     ) l = foldr (\(L _ _ tick) l' -> tick : l') l ch
-        tickMap = 
-    in  m
--}
-
+-- As we keep incrementing the global tick, we eventually run into the situation where it
+-- overflows (2^32). We could switch to a 64 bit tick, but GHC's emulation for 64 bit
+-- operations on 32 bit architectures is very slow. One way around this would be to abuse
+-- a Double as a 53 bit integer like this:
+--
+--
+-- newtype Tick53 = Tick53 { tickDouble :: Double }
+--                  deriving (Eq, Ord)
+--
+-- nextTick :: Tick53 -> Tick53
+-- nextTick (Tick53 t) = Tick53 (t + 1)
+--
+-- instance NFData Tick53 where
+--     rnf _ = ()
+--
+-- instance Bounded Tick53 where
+--     maxBound = Tick53 9007199254740992
+--     minBound = Tick53 0
+--
+--
+-- This is reasonably fast on 32 bit GHC, but still causes a lot of overhead for storing
+-- 64 bit values all over the tree. The solution chosen here is to use a 32 bit (or less)
+-- tick and simply compact all the ticks in the map when we overflow. This happens very
+-- rarely, so it's a clear win for time and space complexity
+--
 compactTicks :: (Eq k, Hashable k) => Map k v -> Map k v
 compactTicks m = go m . empty $ mLimit m
     where go msrc mdst = let (msrc', mkv) = popOldest msrc
                          in  case mkv of Just (k, v) -> go msrc' . fst $ insert k v mdst
                                          Nothing     -> mdst
+
+{-# INLINE compactIfAtTickLimit #-}
+compactIfAtTickLimit :: (Eq k, Hashable k) => Map k v -> Map k v
+compactIfAtTickLimit m = if   mTick m == maxBound
+                         then compactTicks m
+                         else m
+
+{-# INLINE popOldestIfAtSizeLimit #-}
+popOldestIfAtSizeLimit :: (Eq k, Hashable k) => Map k v -> (Map k v, Maybe (k, v))
+popOldestIfAtSizeLimit m = if   mSize m > mLimit m
+                           then popOldest m
+                           else (m, Nothing)
 
 -- Insert a new element into the map, return the new map and the truncated
 -- element (if over the limit)
@@ -239,7 +213,6 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
                              , (mint, maxt)
                              , True
                              )
-
         go !h !k !v !s !t@(Collision colh ch) =
             if   updateOnly
             then if   h == colh
@@ -262,20 +235,17 @@ insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
                  else -- Expand collision into interior node
                       let (mint, maxt) = minMaxFromTrie t
                       in  go h k v s $
-                              if   isA colh s 
+                              if   isA colh s
                               then Node mint     maxt     maxBound minBound t     Empty
-                              else Node maxBound minBound mint     maxt     Empty t    
+                              else Node maxBound minBound mint     maxt     Empty t
         !(trie', _, didInsert) = go (hash kIns) kIns vIns 0 $ mTrie m
         !tick = mTick m
         !inserted = m { mTrie = trie'
                       , mSize = mSize m + if didInsert then 1 else 0
-                      , mTick = nextTick tick
+                      , mTick = tick + 1 -- TODO: We increment in updateOnly even if the key
+                                         --       is not in the map
                       }
-    in  inserted `seq` mSize m `seq`
-        -- Overflow?
-        if   mSize inserted > mLimit inserted
-        then popOldest inserted
-        else (inserted, Nothing)
+    in  popOldestIfAtSizeLimit . compactIfAtTickLimit $ inserted
 
 {-# INLINEABLE size #-}
 size :: Map k v -> (Int, Int)
@@ -312,11 +282,11 @@ toList m = go [] $ mTrie m
 -- Lookup element, also update LRU
 {-# INLINEABLE lookup #-}
 lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
-lookup k' m = ( m { mTick = nextTick $ mTick m
-                  , mTrie = trie'
-                  }
-              , mvalue
-              )
+lookup k' m = if   isNothing mvalue -- Only increment tick if we found something
+              then (m, Nothing)
+              else (compactIfAtTickLimit $ m { mTick = mTick m + 1 , mTrie = trie' }, mvalue)
+                   -- TODO: Oddly enough, the tick limit check causes a ~10% slowdown in
+                   --       the 'lookup (w/ LRU upd) /LBM_CustomHashedTrie (lim 1k)' benchmark
     where go :: Eq k => Hash -> k -> Tick -> Int -> Trie k v -> (Maybe v, Trie k v)
           go h k tick s t@(Node mina maxa minb maxb a b) =
               -- Traverse into child with matching subkey
@@ -509,6 +479,14 @@ valid m =
                  tell "Deleting all elements does not result in an empty map\n"
              unless ((fst $ size allDeleted) == 0) $
                  tell "Deleting all elements does not result in a zero size map\n"
+             let compacted = compactTicks m
+             when ((snd $ popOldest m) /= (snd $ popOldest compacted) ||
+                   (snd $ popNewest m) /= (snd $ popNewest compacted)) $
+                  tell "Tick compaction changes LRU\n"
+             when (toList m /= toList compacted) $
+                  tell "Tick compaction changes map\n"
+             when ((fromIntegral $ mTick compacted) /= (fst $ size compacted)) $
+                  tell "Tick compaction did not reduce tick range to minimum\n"
     in  case w of [] -> Nothing
                   xs -> Just xs
 
