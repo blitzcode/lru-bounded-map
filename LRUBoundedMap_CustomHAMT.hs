@@ -64,7 +64,7 @@ hash = fromIntegral . H.hash
 data Leaf k v = L !k !v !Word64 -- LRU tick
 
 instance (NFData k, NFData v) => NFData (Leaf k v) where
-    rnf (L k v t) = rnf k `seq` rnf v
+    rnf (L k v _) = rnf k `seq` rnf v
 
 data OldNew = OldNew !Int !Int
 
@@ -115,7 +115,7 @@ insertInternal !updateOnly !kIns !vIns !m =
     let go !h !k !v !_ Empty = if   updateOnly
                            then Pair Empty False -- We're in update mode, no insert
                            else Pair (Leaf h $ L k v tick) True
-        go !h !k !v !s !t@(Leaf !lh !li@(L !lk !lv !lt)) =
+        go !h !k !v !s !t@(Leaf !lh !li@(L !lk !_ !_)) =
             if   h == lh
             then if   k == lk
                  then Pair (Leaf h $ L k v tick) False -- Update value
@@ -138,7 +138,7 @@ insertInternal !updateOnly !kIns !vIns !m =
                                             VM.write vec ia $! subtree
                                     return vec
                               ) True
-        go !h !k !v !s !t@(Node _ ch) =
+        go !h !k !v !s !(Node _ ch) =
             let !idx           = indexNode h s
                 !subtree       = ch `V.unsafeIndex` idx
                 !(Pair subtree' i) = -- Traverse into child with matching subkey
@@ -148,7 +148,7 @@ insertInternal !updateOnly !kIns !vIns !m =
             if   updateOnly
             then if   h == colh
                  then let traverseUO [] = [] -- No append in update mode
-                          traverseUO (l@(L lk lv _):xs) =
+                          traverseUO (l@(L lk _ _):xs) =
                                if   lk == k
                                then L k v tick : xs
                                else l : traverseUO xs
@@ -156,7 +156,7 @@ insertInternal !updateOnly !kIns !vIns !m =
                  else Pair t False
             else if   h == colh
                  then let traverse [] = [L k v tick] -- Append new leaf
-                          traverse (l@(L lk lv _):xs) =
+                          traverse (l@(L lk _ _):xs) =
                                if   lk == k
                                then L k v tick : xs -- Update value
                                else l : traverse xs
@@ -222,7 +222,7 @@ toList m = go [] $ mHAMT m
 lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 lookup k' m = (m, go (hash k') k' 0 $ mHAMT m)
     where go !_ !_ !_ Empty = Nothing
-          go h k _ (Leaf lh (L lk lv lt))
+          go h k _ (Leaf lh (L lk lv _))
               | lh /= h   = Nothing
               | lk /= k   = Nothing
               | otherwise = Just lv
@@ -236,7 +236,7 @@ lookup k' m = (m, go (hash k') k' 0 $ mHAMT m)
 lookupNoLRU :: (Eq k, Hashable k) => k -> Map k v -> Maybe v
 lookupNoLRU k' m = go (hash k') k' 0 $ mHAMT m
     where go !_ !_ !_ Empty = Nothing
-          go h k _ (Leaf lh (L lk lv lt))
+          go h k _ (Leaf lh (L lk lv _))
               | lh /= h   = Nothing
               | lk /= k   = Nothing
               | otherwise = Just lv
@@ -250,11 +250,11 @@ lookupNoLRU k' m = go (hash k') k' 0 $ mHAMT m
 delete :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 delete k' m =
     let go !_ !_ !_ Empty = (Empty, Nothing)
-        go h k _ t@(Leaf lh (L lk lv lt))
+        go h k _ t@(Leaf lh (L lk lv _))
             | lh /= h   = (t, Nothing)
             | lk /= k   = (t, Nothing)
             | otherwise = (Empty, Just lv)
-        go h k s t@(Node _ ch) =
+        go h k s (Node _ ch) =
             let !idx              = indexNode h s
                 !subtree          = ch `V.unsafeIndex` idx
                 !(subtree', del') = go h k (s + bitsPerSubkey) subtree
@@ -332,7 +332,7 @@ valid m =
                        Collision h ch -> do
                            when (length ch < 2) $
                                tell "Hash collision node with <2 children\n"
-                           forM_ ch $ \(L lk lv lt) -> checkKey h lk lv
+                           forM_ ch $ \(L lk lv _) -> checkKey h lk lv
                        Node _ ch -> do
                            let used =
                                  V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u) [] ch
