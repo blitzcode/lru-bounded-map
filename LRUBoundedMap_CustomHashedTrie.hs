@@ -157,98 +157,77 @@ popOldestIfAtSizeLimit m = if   mSize m > mLimit m
 -- element (if over the limit)
 {-# INLINEABLE insert #-}
 insert :: (Eq k, Hashable k) => k -> v -> Map k v -> (Map k v, Maybe (k, v))
-insert !k !v !m = insertInternal False k v m
-
-{-# INLINEABLE update #-}
-update :: (Eq k, Hashable k) => k -> v -> Map k v -> Map k v
-update k v m =
-    case insertInternal True k v m of
-        (m', Nothing) -> m'
-        _             -> error "LRUBoundedMap.update: insertInternal truncated with updateOnly"
-
--- TODO: Made a terrible mess out of this function, split into insert / update case,
---       remove most of the strictness annotations, lots of optimization potential
-{-# INLINE insertInternal #-}
-insertInternal :: (Eq k, Hashable k) => Bool -> k -> v -> Map k v -> (Map k v, Maybe (k, v))
-insertInternal !updateOnly {- TODO: captured -} !kIns !vIns !m =
-    let go h k v s t@(Node mina maxa minb maxb a b) =
+insert kIns vIns m =
+    let go h k v s (Node mina maxa minb maxb a b) =
             let !(!(!tA, !(!mintA, !maxtA), !insA), !(!tB, !(!mintB, !maxtB), !insB)) =
                     -- Traverse into child with matching subkey
                     if   isA h s
-                    then (go h k v (s + 1) a, (b, (minb, maxb), False))
-                    else ((a, (mina, maxa), False), go h k v (s + 1) b)
+                    then (go h k v (s + 1) a      , (b, (minb, maxb), False))
+                    else ((a, (mina, maxa), False), go h k v (s + 1) b      )
                 !mint = min mintA mintB
                 !maxt = max maxtA maxtB
             in  ( Node mintA maxtA mintB maxtB tA tB
                 , (mint, maxt)
                 , insA || insB
                 )
-        go !h !k !v !_ Empty = if   updateOnly
-                               then (Empty, (maxBound, minBound), False) -- Update mode, no insert
-                               else (Leaf h $ L k v tick, (tick, tick), True)
-        go h k v s t@(Leaf lh li@(L lk lv lt)) =
+        go h k v _ Empty = (Leaf h $ L k v tick, (tick, tick), True)
+        go h k v s t@(Leaf lh li@(L lk _ lt)) =
             let !mint = min tick lt
                 !maxt = max tick lt
             in  if   h == lh
                 then if   k == lk
                      then (Leaf h $ L k v tick, (tick, tick), False) -- Update value
                      else -- We have a hash collision, change to a collision node and insert
-                          if   updateOnly -- ...unless we're in update mode
-                          then (t, (lt, lt), False)
-                          else (Collision h [L k v tick, li], (mint, maxt), True)
+                          (Collision h [L k v tick, li], (mint, maxt), True)
                 else -- Expand leaf into interior node
-                     if   updateOnly
-                     then (t, (lt, lt), False)
-                     else let t' = Leaf h (L k v tick)
-                              !(!(!a', !mina, !maxa), !(!b', !minb, !maxb))
-                                  | subkeyCollision h lh s = (
-                                             -- Subkey collision, add one level
-                                             (if   isA h s
-                                              then flip (,) (Empty, maxBound, minBound)
-                                              else      (,) (Empty, maxBound, minBound))
-                                                  . (\(x, (minx, maxx), True) -> (x, minx, maxx))
-                                                  $ go h k v (s + 1) t )
-                                  | otherwise =
-                                           ( if isA h  s then (t', tick, tick) else (t, lt, lt)
-                                           , if isB lh s then (t, lt, lt)      else (t', tick, tick)
-                                           )
-                          in ( Node mina maxa minb maxb a' b'
-                             , (mint, maxt)
-                             , True
-                             )
-        go !h !k !v !s !t@(Collision colh ch) =
-            if   updateOnly
-            then if   h == colh
-                 then let traverseUO [] = [] -- No append in update mode
-                          traverseUO (l@(L lk lv _):xs) =
-                               if   lk == k
-                               then L k v tick : xs
-                               else l : traverseUO xs
-                          t' = Collision h $! traverseUO ch
-                      in (t', minMaxFromTrie t', False)
-                 else (t, minMaxFromTrie t, False)
-            else if   h == colh
-                 then let traverse [] = [L k v tick] -- Append new leaf
-                          traverse (l@(L lk lv _):xs) =
-                              if   lk == k
-                              then L k v tick : xs -- Update value
-                              else l : traverse xs
-                          t' = Collision h $! traverse ch
-                      in (t', minMaxFromTrie t', length ch /= length (traverse ch))
-                 else -- Expand collision into interior node
-                      let (mint, maxt) = minMaxFromTrie t
-                      in  go h k v s $
-                              if   isA colh s
-                              then Node mint     maxt     maxBound minBound t     Empty
-                              else Node maxBound minBound mint     maxt     Empty t
-        !(trie', _, didInsert) = go (hash kIns) kIns vIns 0 $ mTrie m
-        !tick = mTick m
-        !inserted = m { mTrie = trie'
-                      , mSize = mSize m + if didInsert then 1 else 0
-                      , mTick = tick + 1 -- TODO: We increment in updateOnly even if the key
-                                         --       is not in the map
-                      }
+                     let !(!(!a', !mina, !maxa), !(!b', !minb, !maxb))
+                             | subkeyCollision h lh s =
+                                   -- Subkey collision, add one level
+                                   (if   isA h s
+                                    then flip (,) (Empty, maxBound, minBound)
+                                    else      (,) (Empty, maxBound, minBound))
+                                        . (\(x, (minx, maxx), True) -> (x, minx, maxx))
+                                        $ go h k v (s + 1) t
+                             | otherwise =
+                                   let t' = Leaf h (L k v tick)
+                                   in  ( if isA h  s then (t', tick, tick) else (t , lt  , lt  )
+                                       , if isB lh s then (t , lt  , lt  ) else (t', tick, tick)
+                                       )
+                     in ( Node mina maxa minb maxb a' b'
+                        , (mint, maxt)
+                        , True
+                        )
+        go h k v s t@(Collision colh ch) =
+            if   h == colh
+            then let traverse [] = [L k v tick] -- Append new leaf
+                     traverse (l@(L lk _ _):xs) =
+                         if   lk == k
+                         then L k v tick : xs -- Update value
+                         else l : traverse xs
+                     t' = Collision h $ traverse ch
+                 in (t', minMaxFromTrie t', length ch /= length (traverse ch))
+            else -- Expand collision into interior node
+                 let (mint, maxt) = minMaxFromTrie t
+                 in  go h k v s $
+                         if   isA colh s
+                         then Node mint     maxt     maxBound minBound t     Empty
+                         else Node maxBound minBound mint     maxt     Empty t
+        !(trie', _, !didInsert) = go (hash kIns) kIns vIns 0 $ mTrie m
+        !tick                   = mTick m
+        !inserted               = m { mTrie = trie'
+                                    , mSize = mSize m + if didInsert then 1 else 0
+                                    , mTick = tick + 1
+                                    }
     in  popOldestIfAtSizeLimit . compactIfAtTickLimit $ inserted
+
+-- TODO: This function is just a wrapper around insert, could write optimized version
+{-# INLINEABLE update #-}
+update :: (Eq k, Hashable k) => k -> v -> Map k v -> Map k v
+update k v m | member k m = case insert k v m of
+                                (m', Nothing) -> m'
+                                _             -> error $ "LRUBoundedMap.update: insert" ++
+                                                         " truncated during update"
+             | otherwise  = m
 
 {-# INLINEABLE size #-}
 size :: Map k v -> (Int, Int)
@@ -268,7 +247,7 @@ null m = case mTrie m of Empty -> True; _ -> False
 
 {-# INLINEABLE member #-}
 member :: (Eq k, Hashable k) => k -> Map k v -> Bool
-member k m = isJust . snd $ lookup k m
+member k m = isJust $ lookupNoLRU k m
 
 {-# INLINEABLE notMember #-}
 notMember :: (Eq k, Hashable k) => k -> Map k v -> Bool
@@ -388,18 +367,18 @@ popInternal popOld m =
     case go $ mTrie m of
         Just k  -> let !(!m', !(Just v)) = delete k m in (m', Just (k, v))
         Nothing -> (m, Nothing)
-    where go Empty               = Nothing
-          go (Leaf _ (L lk _ _)) = Just lk
+    where go Empty                          = Nothing
+          go (Leaf _ (L lk _ _))            = Just lk
           go (Node mina maxa minb maxb a b) = go $ if   popOld
                                                    then if mina < minb then a else b
                                                    else if maxa > maxb then a else b
-          go (Collision _ ch)    = Just . (\(L lk _ _) -> lk)
-                                        . ( if   popOld
-                                            then minimumBy
-                                            else maximumBy
-                                          )
-                                          (\(L _ _ a) (L _ _ b) -> compare a b)
-                                          $ ch
+          go (Collision _ ch)               = Just . (\(L lk _ _) -> lk)
+                                                   . ( if   popOld
+                                                       then minimumBy
+                                                       else maximumBy
+                                                     )
+                                                     (\(L _ _ a) (L _ _ b) -> compare a b)
+                                                     $ ch
 
 -- Run a series of consistency checks on the structure inside of the map, return a list of
 -- errors if any issues where encountered
