@@ -30,7 +30,7 @@ import FisherYatesShuffle
 criterionCfg :: Config
 criterionCfg = defaultConfig { cfgPerformGC = ljust True
                              , cfgReport    = ljust "./report.html"
-                             , cfgSamples   = ljust 10
+                             , cfgSamples   = ljust 100
                              }
 
 main :: IO ()
@@ -43,6 +43,8 @@ main = do
         -- Shuffled version so we don't lookup / delete in the same order we inserted
         keysLShuffled = shuffle (mkStdGen 0) keysL
     when (hash (keysL !! 0) /= hash (keysL !! 1)) $
+        -- TODO: This depends on the hash algorithm, size of 'Int', etc. Need to re-run
+        --       the hash collision finder every time this warning appears
         putStrLn "Warning: Hash collision not present, might not test this aspect properly"
     -- Find us some hash collisions
     {-
@@ -203,15 +205,15 @@ main = do
               (foldl' (\r k -> (r +) . fromJust . HM.lookup k $ lDHMS) 0) $ keysLShuffled
           , bench "Data.IntMap.Strict" . nf
               (foldl' (\r k -> (r +) . fromJust . IM.lookup (hash k) $ lDIMS) 0) $ keysLShuffled
+          , bench "LBM_CustomHAMT" . nf
+              (foldl' (\r k -> (r +)
+                  . fromMaybe 0 . LBM_CHAMT.lookupNoLRU k $ lLBM_CHAMT5k) 0) $ keysLShuffled
           , bench "LBM_CustomHashedTrie (lim 5k)" . nf
               (foldl' (\r k -> (r +)
                   . fromMaybe 0 . LBM_CHT.lookupNoLRU k $ lLBM_CHT5k) 0) $ keysLShuffled
           , bench "LBM_CustomHashedTrie (lim 1k)" . nf
               (foldl' (\r k -> (r +)
                   . fromMaybe 0 . LBM_CHT.lookupNoLRU k $ lLBM_CHT1k) 0) $ keysLShuffled
-          , bench "LBM_CustomHAMT" . nf
-            (foldl' (\r k -> (r +)
-                . fromMaybe 0 . LBM_CHAMT.lookupNoLRU k $ lLBM_CHAMT5k) 0) $ keysLShuffled
           ]
           -- If we lookup / delete in the same / reverse order we inserted, we hit a
           -- special case with the LLHM where the key to update is always at the end /
