@@ -87,14 +87,17 @@ instance (NFData k, NFData v) => NFData (Trie k v) where
     rnf (Node _ _ _ _ a b) = rnf a `seq` rnf b
     rnf (Collision _ ch)   = rnf ch
 
--- TODO: Check if limit exceeds maxBound of tick
 empty :: Int -> Map k v
-empty limit | limit >= 1 = Map { mLimit = limit
-                               , mTick  = minBound
-                               , mSize  = 0
-                               , mTrie  = Empty
-                               }
-            | otherwise  = error "limit for LRUBoundedMap needs to be >= 1"
+empty limit | limit < 1                    = error   "limit for LRUBoundedMap needs to be >= 1"
+            | limit > fromIntegral maxTick = error $ "limit for LRUBoundedMap needs to be <= "
+                                                     ++ show maxTick 
+            | otherwise = Map { mLimit = limit
+                              , mTick  = minBound
+                              , mSize  = 0
+                              , mTrie  = Empty
+                              }
+            where -- Probably doesn't make much sense to go higher than this
+                  maxTick = (maxBound :: Tick) `div` 2
 
 {-# INLINE isA #-}
 {-# INLINE isB #-}
@@ -285,8 +288,6 @@ lookup :: (Eq k, Hashable k) => k -> Map k v -> (Map k v, Maybe v)
 lookup k' m = if   isNothing mvalue -- Only increment tick if we found something
               then (m, Nothing)
               else (compactIfAtTickLimit $ m { mTick = mTick m + 1, mTrie = trie' }, mvalue)
-                   -- TODO: Oddly enough, the tick limit check causes a ~10% slowdown in
-                   --       the 'lookup (w/ LRU upd) /LBM_CustomHashedTrie (lim 1k)' benchmark
     where go :: Eq k => Hash -> k -> Tick -> Int -> Trie k v -> (Maybe v, Trie k v)
           go h k tick s t@(Node mina maxa minb maxb a b) =
               -- Traverse into child with matching subkey

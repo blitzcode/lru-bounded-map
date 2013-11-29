@@ -150,7 +150,6 @@ delete k m@(Map first last limit content) =
                                                           $ deleted
                                         , mKLV
                                         )
-                                        
                      | otherwise     -> -- Remove from the middle, first / last unchanged
                                         ( Map first
                                               last
