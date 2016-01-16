@@ -21,7 +21,6 @@ module DoubleMap ( Map
 
 import qualified Data.Map.Strict as M
 import Prelude hiding (lookup, null)
-import Control.Applicative hiding (empty)
 import Control.Monad.Writer
 import Control.DeepSeq (NFData(rnf))
 import Text.Printf

@@ -16,7 +16,6 @@ module LRUBoundedMap_DoubleMapBTree ( Map
 
 import Prelude hiding (lookup)
 import Data.Word
-import Control.Applicative hiding (empty)
 import Control.Monad.Writer
 import Control.DeepSeq (NFData(rnf))
 import Text.Printf

@@ -1,5 +1,5 @@
 
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE BangPatterns, FlexibleContexts #-}
 {-# OPTIONS_GHC -fno-full-laziness -funbox-strict-fields #-}
 
 module LRUBoundedMap_CustomHAMT ( Map
@@ -29,7 +29,6 @@ import Data.Foldable (minimumBy, maximumBy)
 import Data.List (find, partition, foldl')
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as VM
-import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Writer
 import Control.DeepSeq (NFData(rnf))
@@ -155,13 +154,13 @@ insertInternal !updateOnly !kIns !vIns !m =
                       in Pair (Collision h $! traverseUO ch) False
                  else Pair t False
             else if   h == colh
-                 then let traverse [] = [L k v tick] -- Append new leaf
-                          traverse (l@(L lk _ _):xs) =
+                 then let trav [] = [L k v tick] -- Append new leaf
+                          trav (l@(L lk _ _):xs) =
                                if   lk == k
                                then L k v tick : xs -- Update value
-                               else l : traverse xs
-                      in  Pair (Collision h $! traverse ch)
-                               (length ch /= length (traverse ch)) -- TODO: Slow
+                               else l : trav xs
+                      in  Pair (Collision h $! trav ch)
+                               (length ch /= length (trav ch)) -- TODO: Slow
                  else -- Expand collision into interior node
                       go h k v s . Node (OldNew 0 0) $! V.create $ do
                           vec <- VM.replicate maxChildren Empty
@@ -326,7 +325,7 @@ valid m =
                  tell "Mismatch beween cached and actual size\n"
              --when ((fst $ size m) > mLimit m)
                --  $ tell "Size over the limit\n"
-             let traverse s t =
+             let trav s t =
                    case t of
                        Leaf h (L k v _) -> checkKey h k v
                        Collision h ch -> do
@@ -336,7 +335,7 @@ valid m =
                        Node _ ch -> do
                            let used =
                                  V.ifoldr (\i t' u -> case t' of Empty -> u; _ -> i : u) [] ch
-                           when (s + bitsPerSubkey > bitSize (undefined :: Word)) $
+                           when (s + bitsPerSubkey > finiteBitSize (undefined :: Word)) $
                                tell "Subkey shift too large during traversal\n"
                            when (V.length ch /= maxChildren) $
                                tell "Node with a child vector /= maxChildren\n"
@@ -347,7 +346,7 @@ valid m =
                                   Leaf      _ _ -> tell "Node with single Leaf child\n"
                                   Collision _ _ -> tell "Node with single Collision child\n"
                                   _             -> return ()
-                           forM_ (V.toList ch) $ traverse (s + bitsPerSubkey)
+                           forM_ (V.toList ch) $ trav (s + bitsPerSubkey)
                        Empty -> return ()
                  checkKey h k v = do
                      when (hash k /= h) $
@@ -363,7 +362,7 @@ valid m =
                          tell "Deleting key did not reduce size\n"
                      when (fromMaybe v v' /= v) $
                          tell "Delete returned wrong value\n"
-              in traverse 0 $ mHAMT m
+              in trav 0 $ mHAMT m
              let keysL      = map (fst) $ toList m
                  allDeleted = foldl' (\r k -> fst $ delete k r) m keysL
              when (length keysL /= (fst $ size m)) $

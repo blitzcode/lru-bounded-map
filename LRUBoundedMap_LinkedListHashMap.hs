@@ -224,11 +224,11 @@ valid (Map first last limit content) =
                     tell "Forwards and backwards traversal gives different lists\n"
                 when (not $ all (`HM.member` content) keysForwards) $
                     tell "Not all keys from the linked-list present in the map\n"
-        keysForwards           = traverse (lNext) first
-        keysBackwards          = traverse (lPrev) last
-        traverse _ Nothing     = []
-        traverse step (Just k) = let Just nextK = HM.lookup k content
-                                 in  k : (traverse (step) $ step nextK)
+        keysForwards       = trav (lNext) first
+        keysBackwards      = trav (lPrev) last
+        trav _ Nothing     = []
+        trav step (Just k) = let Just nextK = HM.lookup k content
+                             in  k : (trav (step) $ step nextK)
     in  case w of [] -> Nothing
                   xs -> Just xs
 

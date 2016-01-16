@@ -67,6 +67,11 @@ Some important notes on interpreting the results:
 
 * All measurements performed on a 2.26Ghz Core 2 Duo, compiled with GHC 7.6.3 / HP 2013.2.0.0 
 
+  NOTE: Same system with GHC 7.10.3 and Stackage LTS 4.0 libraries gets considerably worse
+  performance across all benchmarks. Not sure if there was just a performance regression
+  across the board or I'm doing something wrong. Could also just be the cache due to the 32/64
+  bit switch.
+
 * The optimization effort put in differs between the containers, and priorities have been determined by the specific [use case](#use-case)
 
 * Timings are always for performing the operation with all 5000 keys

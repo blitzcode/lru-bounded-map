@@ -9,11 +9,10 @@ import Data.List
 -- import Data.Function
 import Data.Maybe
 import Data.Hashable
-import Control.Applicative
 import Control.Monad
 import Control.DeepSeq
 import Criterion.Main
-import Criterion.Config
+import Criterion.Types
 import System.Exit
 import System.Random
 
@@ -28,9 +27,9 @@ import qualified LRUBoundedMap_CustomHashedTrie  as LBM_CHT
 import FisherYatesShuffle
 
 criterionCfg :: Config
-criterionCfg = defaultConfig { cfgPerformGC = ljust True
-                             , cfgReport    = ljust "./report.html"
-                             , cfgSamples   = ljust 100
+criterionCfg = defaultConfig { forceGC    = True
+                             , reportFile = Just "./report.html"
+                             , resamples  = 100
                              }
 
 main :: IO ()
@@ -151,7 +150,6 @@ main = do
       -- Run criterion benchmarks
       defaultMainWith
         criterionCfg
-        (return ())
         [
           bgroup "insert (w/o LRU upd)"
           [
